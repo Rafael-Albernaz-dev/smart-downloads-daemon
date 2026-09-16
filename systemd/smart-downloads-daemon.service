@@ -1,0 +1,14 @@
+[Unit]
+Description=Smart Downloads Sorter Daemon (inotify file sorter with grace period)
+Documentation=https://github.com/Rafael-Albernaz-dev/smart-downloads-daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/smart-downloads-daemon
+Restart=on-failure
+RestartSec=5s
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
