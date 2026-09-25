@@ -58,7 +58,14 @@ class Watcher:
     def run(self, stop_event: Optional[threading.Event] = None) -> None:
         """Start the inotify select.poll event loop."""
         self.config.downloads_dir.mkdir(parents=True, exist_ok=True)
-        self.config.destination_dir.mkdir(parents=True, exist_ok=True)
+        if self.config.is_destination_available():
+            self.config.destination_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            print(
+                f"[WARNING] Destination {self.config.destination_dir} is not currently available/mounted. Files will remain queued in Downloads.",
+                file=sys.stderr,
+            )
+            sys.stderr.flush()
 
         inotify_service = Inotify(self.config.downloads_dir)
         poller = select.poll()
@@ -93,6 +100,14 @@ class Watcher:
                 now = time.time()
                 expired = [fname for fname, due in list(self.pending_files.items()) if due <= now]
                 for fname in expired:
+                    if not self.config.is_destination_available():
+                        self.pending_files[fname] = now + 30
+                        print(
+                            f"[WARNING] Destination {self.config.destination_dir} unavailable. Retrying '{fname}' in 30s.",
+                            file=sys.stderr,
+                        )
+                        sys.stderr.flush()
+                        continue
                     self.pending_files.pop(fname, None)
                     move_file(fname, self.config)
 

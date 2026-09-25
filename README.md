@@ -130,39 +130,63 @@ journalctl --user -u smart-downloads-daemon -f
 
 ## CLI Usage
 
-You can also run the daemon interactively or execute one-off scans:
+The executable provides commands for daemon execution, configuration, and batch storage migration:
 
 ```bash
+# View active configuration, directories, and storage free space:
+smart-downloads-daemon config --show
+
+# Change destination directory on the fly (saves config and reloads daemon):
+smart-downloads-daemon config --set-destination /media/toru/96A10007A0FFEB9D
+
+# Preview batch migration of existing organized folders (dry-run):
+smart-downloads-daemon migrate --to /media/toru/96A10007A0FFEB9D
+
+# Execute batch migration and update config automatically:
+smart-downloads-daemon migrate --to /media/toru/96A10007A0FFEB9D --apply
+
 # Run daemon in foreground:
 smart-downloads-daemon
 
 # Perform a single scan to organize eligible files, then exit:
 smart-downloads-daemon --scan-once
 
-# Override grace period cooldown (e.g. 120 seconds):
+# Override grace period cooldown for a session (e.g. 120 seconds):
 smart-downloads-daemon --grace-period 120
-
-# Use a custom JSON configuration file:
-smart-downloads-daemon --config /path/to/custom_config.json
 ```
+
+---
+
+## Batch Migration & Storage Management
+
+When moving organized categories to a secondary drive (or freeing up space on your primary disk):
+
+1. **Safety First**: The migrator only moves category directories managed by the daemon (`PDF`, `Textos`, `Planilhas`, `Imagens`, `Videos`, `Audios`, `Compactados`, `Outros`). Any personal repos or unmanaged files in the root folder remain strictly untouched.
+2. **Atomic Verification**: Files are copied and verified for size before unlinking source files.
+3. **Collision Immune**: If a file already exists on the target disk, it is preserved and the incoming file receives an incremental timestamp counter (`_YYYYMMDD_HHMMSS_N`).
+4. **Mount Guard**: If a secondary/external drive is unmounted or disconnected, the daemon automatically holds downloads safely in `~/Downloads` until the mount returns, preventing root partition contamination.
 
 ---
 
 ## Custom Configuration
 
-Optionally create `~/.config/smart-downloads-daemon/config.json` to customize folders, categories, or cooldown periods:
+Settings are saved in `~/.config/smart-downloads-daemon/config.json`:
 
 ```json
 {
-  "downloads_dir": "~/Downloads",
-  "destination_dir": "~/Documents",
+  "downloads_dir": "/home/toru/Downloads",
+  "destination_dir": "/media/toru/96A10007A0FFEB9D",
   "grace_period_seconds": 300,
   "categories": {
     "PDF": ["pdf"],
-    "Code": ["py", "rs", "go", "ts", "js", "html", "css"],
-    "Archives": ["zip", "tar", "gz", "7z"]
+    "Textos": ["txt", "md", "doc", "docx", "odt", "rtf", "log"],
+    "Planilhas": ["xls", "xlsx", "csv", "ods", "tsv"],
+    "Imagens": ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "tiff"],
+    "Videos": ["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"],
+    "Audios": ["mp3", "wav", "ogg", "flac", "m4a", "aac", "wma"],
+    "Compactados": ["zip", "tar", "gz", "bz2", "7z", "rar", "xz", "iso"]
   },
-  "ignore_extensions": [".crdownload", ".part", ".tmp"]
+  "ignore_extensions": [".aria2", ".crdownload", ".download", ".opdownload", ".part", ".tmp"]
 }
 ```
 

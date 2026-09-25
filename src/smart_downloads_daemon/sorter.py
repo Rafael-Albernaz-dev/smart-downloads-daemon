@@ -38,6 +38,14 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
     if not source_path.is_file():
         return None
 
+    if not config.is_destination_available():
+        print(
+            f"[WARNING] Destination '{config.destination_dir}' is unavailable (unmounted or unwritable). Retaining '{filename}' in Downloads.",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
+        return None
+
     dest_folder = get_destination_folder(filename, config)
     dest_folder.mkdir(parents=True, exist_ok=True)
 
