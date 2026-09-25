@@ -12,3 +12,4 @@ Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=default.target
+Alias=downloads-organizer.service

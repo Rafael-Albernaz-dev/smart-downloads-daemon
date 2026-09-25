@@ -9,6 +9,8 @@ def test_is_valid_file():
     assert is_valid_file("document.pdf.crdownload", cfg) is False
     assert is_valid_file("archive.zip.part", cfg) is False
     assert is_valid_file("tempfile.tmp", cfg) is False
+    assert is_valid_file("browser.opdownload", cfg) is False
+    assert is_valid_file("bigfile.aria2", cfg) is False
     assert is_valid_file("document.txt~", cfg) is False
     assert is_valid_file("#autosave#", cfg) is False
 
@@ -59,3 +61,31 @@ def test_move_file_with_collision_resolution(tmp_path: Path):
     assert existing_dest.read_text() == "existing content"
     # Moved file contains source content
     assert moved_path.read_text() == "v1 content"
+
+def test_move_file_repetitive_collision(tmp_path: Path):
+    from datetime import datetime
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs)
+
+    source_file = downloads / "data.csv"
+    source_file.write_text("new data")
+
+    planilhas_dest = docs / "Planilhas"
+    planilhas_dest.mkdir()
+    (planilhas_dest / "data.csv").write_text("orig")
+
+    # Pre-create the collision target that the timestamp will generate
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    (planilhas_dest / f"data_{ts}.csv").write_text("first collision")
+
+    moved = move_file("data.csv", cfg)
+    assert moved is not None
+    assert moved.exists()
+    assert moved.name == f"data_{ts}_1.csv"
+    assert (planilhas_dest / f"data_{ts}.csv").read_text() == "first collision"
+    assert moved.read_text() == "new data"
+

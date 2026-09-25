@@ -18,7 +18,14 @@ DEFAULT_CATEGORIES: Dict[str, List[str]] = {
     "Compactados": ["zip", "tar", "gz", "bz2", "7z", "rar", "xz", "iso"],
 }
 
-DEFAULT_IGNORE_EXTENSIONS: Set[str] = {".crdownload", ".part", ".tmp", ".download"}
+DEFAULT_IGNORE_EXTENSIONS: Set[str] = {
+    ".crdownload",
+    ".part",
+    ".tmp",
+    ".download",
+    ".opdownload",
+    ".aria2",
+}
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "smart-downloads-daemon" / "config.json"
 
 @dataclass

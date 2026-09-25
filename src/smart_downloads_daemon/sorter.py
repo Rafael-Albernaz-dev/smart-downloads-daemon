@@ -47,6 +47,10 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
         stem = source_path.stem.rstrip()
         suffix = source_path.suffix.strip()
         dest_file = dest_folder / f"{stem}_{timestamp}{suffix}"
+        counter = 1
+        while dest_file.exists():
+            dest_file = dest_folder / f"{stem}_{timestamp}_{counter}{suffix}"
+            counter += 1
 
     try:
         shutil.move(str(source_path), str(dest_file))
