@@ -48,7 +48,8 @@ class Watcher:
                     mtime = item.stat().st_mtime
                     age = now - mtime
                     if age >= self.config.grace_period_seconds:
-                        move_file(item.name, self.config)
+                        if move_file(item.name, self.config) is None and item.is_file():
+                            self.schedule_file(item.name, delay_seconds=30)
                     else:
                         remaining = self.config.grace_period_seconds - age
                         self.schedule_file(item.name, delay_seconds=remaining)
@@ -108,8 +109,11 @@ class Watcher:
                         )
                         sys.stderr.flush()
                         continue
-                    self.pending_files.pop(fname, None)
-                    move_file(fname, self.config)
+                    moved = move_file(fname, self.config)
+                    if moved is None and (self.config.downloads_dir / fname).is_file():
+                        self.pending_files[fname] = time.time() + 30
+                    else:
+                        self.pending_files.pop(fname, None)
 
         finally:
             inotify_service.close()
