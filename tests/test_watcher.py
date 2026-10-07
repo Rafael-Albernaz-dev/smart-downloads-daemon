@@ -86,3 +86,50 @@ def test_event_loop_move_failure_remains_queued(tmp_path: Path):
         watcher.run(stop)
     assert source.read_text() == "preserved content"
     assert watcher.pending_files["old.pdf"] > time.time()
+
+
+def test_watcher_paused_does_not_move_files(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    docs = tmp_path / "Docs"
+    source = downloads / "hold.pdf"
+    source.write_text("hold this")
+    os.utime(source, (time.time() - 600, time.time() - 600))
+
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs, config_dir=tmp_path)
+    cfg.set_paused(True)
+    watcher = Watcher(cfg)
+
+    # In paused mode, existing expired files are scheduled with 0 delay but not moved
+    watcher.process_existing_files()
+    assert source.exists()
+    assert "hold.pdf" in watcher.pending_files
+
+    stop = threading.Event()
+    def one_iter(timeout):
+        stop.set()
+        return []
+
+    with patch("smart_downloads_daemon.watcher.select.poll") as poll:
+        poll.return_value.poll.side_effect = one_iter
+        watcher.run(stop)
+
+    # File must still be in Downloads because daemon is paused
+    assert source.exists()
+    assert not (docs / "PDF" / "hold.pdf").exists()
+
+    # Now unpause and run another iteration
+    cfg.set_paused(False)
+    stop2 = threading.Event()
+    def second_iter(timeout):
+        stop2.set()
+        return []
+
+    with patch("smart_downloads_daemon.watcher.select.poll") as poll:
+        poll.return_value.poll.side_effect = second_iter
+        watcher.run(stop2)
+
+    # Now file is moved!
+    assert not source.exists()
+    assert (docs / "PDF" / "hold.pdf").read_text() == "hold this"
+

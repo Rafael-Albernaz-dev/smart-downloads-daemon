@@ -1,11 +1,14 @@
 """
-Configuration loader, storage discovery, and category mapping definitions.
+Configuration loader, storage discovery, pause control, and category mapping definitions.
 """
 
 import json
 import os
 import shutil
+import subprocess
+import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -27,7 +30,13 @@ DEFAULT_IGNORE_EXTENSIONS: Set[str] = {
     ".opdownload",
     ".aria2",
 }
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "smart-downloads-daemon" / "config.json"
+
+DEFAULT_CONFIG_DIR = Path.home() / ".config" / "smart-downloads-daemon"
+DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
+DEFAULT_PAUSE_PATH = DEFAULT_CONFIG_DIR / "paused"
+DEFAULT_STATE_PATH = DEFAULT_CONFIG_DIR / "state.json"
+DEFAULT_LOCK_PATH = DEFAULT_CONFIG_DIR / "daemon.lock"
+
 
 def is_path_available(path: Path) -> bool:
     """
@@ -55,6 +64,49 @@ def is_path_available(path: Path) -> bool:
 
     return parent.exists() and os.access(parent, os.W_OK)
 
+
+def find_block_device_for_path(path: Path) -> Optional[Path]:
+    """
+    Detect if a path refers to a /media or /mnt partition with a UUID or label,
+    and find the underlying block device (e.g. /dev/disk/by-uuid/<UUID>).
+    """
+    try:
+        p = path.expanduser()
+        parts = p.parts
+        if len(parts) >= 3 and parts[1] in ("media", "mnt"):
+            target_name = parts[3] if len(parts) >= 4 else parts[2]
+            by_uuid = Path(f"/dev/disk/by-uuid/{target_name}")
+            if by_uuid.exists():
+                return by_uuid
+            by_label = Path(f"/dev/disk/by-label/{target_name}")
+            if by_label.exists():
+                return by_label
+    except Exception:
+        pass
+    return None
+
+
+def try_automount_path(path: Path) -> bool:
+    """
+    Attempt to automatically mount an unmounted partition via udisksctl.
+    """
+    dev = find_block_device_for_path(path)
+    if not dev:
+        return False
+    try:
+        res = subprocess.run(
+            ["udisksctl", "mount", "-b", str(dev), "--no-user-interaction"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            return is_path_available(path)
+    except Exception:
+        pass
+    return False
+
+
 @dataclass
 class DaemonConfig:
     downloads_dir: Path = field(default_factory=lambda: Path.home() / "Downloads")
@@ -62,11 +114,26 @@ class DaemonConfig:
     grace_period_seconds: int = 300
     categories: Dict[str, List[str]] = field(default_factory=lambda: dict(DEFAULT_CATEGORIES))
     ignore_extensions: Set[str] = field(default_factory=lambda: set(DEFAULT_IGNORE_EXTENSIONS))
+    config_dir: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR)
+
+    @property
+    def pause_file(self) -> Path:
+        return self.config_dir / "paused"
+
+    @property
+    def state_file(self) -> Path:
+        return self.config_dir / "state.json"
+
+    @property
+    def lock_file(self) -> Path:
+        return self.config_dir / "daemon.lock"
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "DaemonConfig":
         path = config_path or DEFAULT_CONFIG_PATH
         cfg = cls()
+        if config_path is not None:
+            cfg.config_dir = config_path.parent
         if path.is_file():
             try:
                 with open(path, "r", encoding="utf-8") as f:
@@ -87,7 +154,7 @@ class DaemonConfig:
 
     def save(self, config_path: Optional[Path] = None) -> Path:
         """Persist configuration to JSON file."""
-        path = (config_path or DEFAULT_CONFIG_PATH).expanduser().resolve()
+        path = (config_path or (self.config_dir / "config.json")).expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "downloads_dir": str(self.downloads_dir),
@@ -100,6 +167,38 @@ class DaemonConfig:
             json.dump(data, f, indent=2, ensure_ascii=False)
         return path
 
+    def is_paused(self) -> bool:
+        """Check if sorting daemon is currently paused."""
+        return self.pause_file.is_file()
+
+    def set_paused(self, paused: bool, reason: str = "") -> None:
+        """Set or unset the paused state."""
+        if paused:
+            self.pause_file.parent.mkdir(parents=True, exist_ok=True)
+            info = {
+                "paused_at": datetime.now().isoformat(),
+                "timestamp": time.time(),
+                "reason": reason or "Paused by user",
+            }
+            with open(self.pause_file, "w", encoding="utf-8") as f:
+                json.dump(info, f, indent=2)
+        else:
+            if self.pause_file.is_file():
+                try:
+                    self.pause_file.unlink()
+                except OSError:
+                    pass
+
+    def get_pause_info(self) -> Optional[Dict[str, Any]]:
+        """Return details about pause state if paused."""
+        if not self.is_paused():
+            return None
+        try:
+            with open(self.pause_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {"paused_at": "unknown", "reason": "Paused by user"}
+
     def is_destination_available(self) -> bool:
         """Verify destination directory is mounted and writable."""
         return is_path_available(self.destination_dir)
@@ -107,6 +206,16 @@ class DaemonConfig:
     def is_downloads_available(self) -> bool:
         """Verify downloads directory is accessible."""
         return is_path_available(self.downloads_dir)
+
+    def try_automount_destination(self) -> bool:
+        """Attempt to mount destination directory if it is an unmounted block device."""
+        if self.is_destination_available():
+            return True
+        return try_automount_path(self.destination_dir)
+
+    def get_destination_device(self) -> Optional[Path]:
+        """Return the block device corresponding to the destination directory if any."""
+        return find_block_device_for_path(self.destination_dir)
 
     def get_storage_info(self, target_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         """Return disk usage details for a given path or destination directory."""

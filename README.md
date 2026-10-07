@@ -27,8 +27,12 @@ Most automated download organizers suffer from critical usability and architectu
 * **Direct `libc inotify` Syscalls via `ctypes`**: Communicates directly with the Linux kernel via `inotify_init1(0)` and `inotify_add_watch` with binary struct decoding (`struct inotify_event`). Zero third-party dependencies.
 * **0% Idle CPU (`select.poll`)**: The event loop sleeps in the kernel until an actual I/O event occurs or the next file cooldown expires. Zero busy-waiting.
 * **Smart Grace Period (5-Minute Cooldown)**: Files remain immediately available in `~/Downloads` for quick access. Only after 5 minutes of inactivity are they silently moved to their permanent home in `~/Documents`.
+* **Pause & Resume Controls**: Easily suspend sorting (`smart-downloads-daemon pause`) when working with temporary downloads and resume (`smart-downloads-daemon resume`) when ready.
+* **Mount Guard & Auto-Recovery**: If a secondary/external drive is unmounted, holds downloads safely in `~/Downloads` without log spam, and auto-mounts on demand (`smart-downloads-daemon mount`).
+* **Live Status Dashboard**: View countdown timers for pending downloads, service uptime, paused state, and disk health with `smart-downloads-daemon status` (or `--json`).
 * **In-Flight Download Guards**: Automatically ignores incomplete browser downloads (`.crdownload`, `.part`, `.tmp`, `.download`) until writing has completely finished (`IN_CLOSE_WRITE` / `IN_MOVED_TO`).
 * **Timestamped Collision Protection**: If `report.pdf` already exists in `~/Documents/PDF`, the new file is automatically renamed to `report_YYYYMMDD_HHMMSS.pdf` without overwriting data.
+* **Single-Instance Protection**: Prevents duplicate concurrent daemon processes with automatic background service detection and POSIX lockfile guards.
 * **Native `systemd --user` Integration**: Runs seamlessly as a background user service on Linux login.
 
 ---
@@ -41,14 +45,20 @@ flowchart TD
 
     subgraph DaemonLoop [smart-downloads-daemon Event Loop]
         Poller -->|Raw struct inotify_event| Parser[Binary Struct Parser\nstruct.unpack_from]
-        Parser --> Guard{Guard Rails\nCheck In-Flight / Hidden?}
+        Parser --> PauseCheck{Is Daemon\nPaused?}
+        PauseCheck -->|Yes: Paused| HoldQueue[Hold in Queue\nDo not move]
+        PauseCheck -->|No| Guard{Guard Rails\nCheck In-Flight / Hidden?}
         Guard -->|Ignored: .crdownload / .tmp / .part| Drop[Ignore Event]
         Guard -->|Valid File| Scheduler[Grace-Period Scheduler\nDefault: 300s cooldown]
 
         Scheduler --> DynamicWait[Dynamic Poll Timeout\nSleep until next file expires or 5s]
         DynamicWait --> Expired{Cooldown\nExpired?}
         Expired -->|No| DynamicWait
-        Expired -->|Yes| Sorter[Categorization Engine]
+        Expired -->|Yes| MountCheck{Destination\nMounted?}
+        MountCheck -->|No| AutoMount{Try Auto-Mount\nudisksctl}
+        AutoMount -->|Success| Sorter[Categorization Engine]
+        AutoMount -->|Failed| HoldQueue
+        MountCheck -->|Yes| Sorter
     end
 
     Sorter --> Collision{File exists in\nDestination?}
@@ -88,15 +98,18 @@ smart-downloads-daemon/
 │   ├── __init__.py                # Package version
 │   ├── __main__.py                # python -m smart_downloads_daemon support
 │   ├── cli.py                     # Command-line interface & argument parser
-│   ├── config.py                  # JSON config loader & default category definitions
+│   ├── config.py                  # JSON config loader, pause & storage definitions
 │   ├── inotify.py                 # POSIX libc inotify ctypes wrapper & struct unpacking
+│   ├── migrator.py                # Batch storage migration engine across disks
 │   ├── sorter.py                  # Category classification, guards & collision renaming
 │   └── watcher.py                 # select.poll dynamic event loop & grace scheduling
 └── tests/
-    ├── test_config.py             # Config loading & defaults tests
+    ├── test_cli.py                # CLI commands, status, pause & lock tests
+    ├── test_config.py             # Config loading, pause control & disk helpers
     ├── test_inotify.py            # Struct size & initialization tests
+    ├── test_migrator.py           # Migration planning & collision tests
     ├── test_sorter.py             # Classification, ignore rules & collision tests
-    └── test_watcher.py            # File scheduling & queue expiration tests
+    └── test_watcher.py            # File scheduling, pause & retry expiration tests
 ```
 
 ---
@@ -130,9 +143,24 @@ journalctl --user -u smart-downloads-daemon -f
 
 ## CLI Usage
 
-The executable provides commands for daemon execution, configuration, and batch storage migration:
+The executable provides commands for daemon monitoring, pause control, configuration, and storage migration:
 
 ```bash
+# View comprehensive daemon status, operating mode, disk health, and queue:
+smart-downloads-daemon status
+
+# Export live status and metrics as JSON:
+smart-downloads-daemon status --json
+
+# Temporarily pause automated file sorting (holds all downloads in ~/Downloads):
+smart-downloads-daemon pause
+
+# Resume automated file sorting:
+smart-downloads-daemon resume
+
+# Automatically mount destination partition if disconnected/unmounted:
+smart-downloads-daemon mount
+
 # View active configuration, directories, and storage free space:
 smart-downloads-daemon config --show
 
@@ -145,8 +173,8 @@ smart-downloads-daemon migrate --to /media/toru/96A10007A0FFEB9D
 # Execute batch migration and update config automatically:
 smart-downloads-daemon migrate --to /media/toru/96A10007A0FFEB9D --apply
 
-# Run daemon in foreground:
-smart-downloads-daemon
+# Run daemon in foreground (single-instance protected):
+smart-downloads-daemon --foreground
 
 # Perform a single scan to organize eligible files, then exit:
 smart-downloads-daemon --scan-once
