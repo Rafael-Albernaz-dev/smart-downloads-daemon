@@ -27,11 +27,13 @@ Most automated download organizers suffer from critical usability and architectu
 * **Direct `libc inotify` Syscalls via `ctypes`**: Communicates directly with the Linux kernel via `inotify_init1(0)` and `inotify_add_watch` with binary struct decoding (`struct inotify_event`). Zero third-party dependencies.
 * **0% Idle CPU (`select.poll`)**: The event loop sleeps in the kernel until an actual I/O event occurs or the next file cooldown expires. Zero busy-waiting.
 * **Smart Grace Period (5-Minute Cooldown)**: Files remain immediately available in `~/Downloads` for quick access. Only after 5 minutes of inactivity are they silently moved to their permanent home in `~/Documents`.
+* **Smart Subcategories & Content Sniffing**: Files are classified into context-aware subfolders (e.g. `PDF/Ordem de Servico`, `PDF/Boletos`, `Planilhas/Cobranca e Negativacao`) via keyword matching and non-intrusive PDF content sniffing (via native `pdftotext`).
+* **Batch Directory Reorganization**: Reorganize existing flat category folders into the new subcategory structure safely with `smart-downloads-daemon organize` (`--dry-run` and `--apply`).
 * **Pause & Resume Controls**: Easily suspend sorting (`smart-downloads-daemon pause`) when working with temporary downloads and resume (`smart-downloads-daemon resume`) when ready.
 * **Mount Guard & Auto-Recovery**: If a secondary/external drive is unmounted, holds downloads safely in `~/Downloads` without log spam, and auto-mounts on demand (`smart-downloads-daemon mount`).
 * **Live Status Dashboard**: View countdown timers for pending downloads, service uptime, paused state, and disk health with `smart-downloads-daemon status` (or `--json`).
 * **In-Flight Download Guards**: Automatically ignores incomplete browser downloads (`.crdownload`, `.part`, `.tmp`, `.download`) until writing has completely finished (`IN_CLOSE_WRITE` / `IN_MOVED_TO`).
-* **Timestamped Collision Protection**: If `report.pdf` already exists in `~/Documents/PDF`, the new file is automatically renamed to `report_YYYYMMDD_HHMMSS.pdf` without overwriting data.
+* **Timestamped Collision Protection**: If `report.pdf` already exists in `~/Documents/PDF/Relatorios`, the new file is automatically renamed to `report_YYYYMMDD_HHMMSS.pdf` without overwriting data.
 * **Single-Instance Protection**: Prevents duplicate concurrent daemon processes with automatic background service detection and POSIX lockfile guards.
 * **Native `systemd --user` Integration**: Runs seamlessly as a background user service on Linux login.
 
@@ -56,16 +58,20 @@ flowchart TD
         Expired -->|No| DynamicWait
         Expired -->|Yes| MountCheck{Destination\nMounted?}
         MountCheck -->|No| AutoMount{Try Auto-Mount\nudisksctl}
-        AutoMount -->|Success| Sorter[Categorization Engine]
+        AutoMount -->|Success| Classifier[Categorization Engine]
         AutoMount -->|Failed| HoldQueue
-        MountCheck -->|Yes| Sorter
+        MountCheck -->|Yes| Classifier
+        Classifier --> SubcatCheck{Match Subcategory?\nFilename / PDF Content}
+        SubcatCheck -->|Match| SubcatFolder[Target Subcategory Folder]
+        SubcatCheck -->|Fallback| RootFolder[Target Root Category Folder]
     end
 
-    Sorter --> Collision{File exists in\nDestination?}
+    SubcatFolder --> Collision{File exists in\nDestination?}
+    RootFolder --> Collision
     Collision -->|Yes| Rename[Append Timestamp\n_YYYYMMDD_HHMMSS]
-    Collision -->|No| Move[shutil.move to Category Folder]
+    Collision -->|No| Move[shutil.move to Destination]
     Rename --> Move
-    Move --> Dest[~/Documents/Category/]
+    Move --> Dest[Destination Directory]
 ```
 
 ---
@@ -83,6 +89,30 @@ flowchart TD
 | **Compactados** | `zip`, `tar`, `gz`, `bz2`, `7z`, `rar`, `xz`, `iso` |
 | **Outros** | Any uncategorized extension |
 
+### Smart Subcategories Taxonomy
+
+Files inside supported categories are automatically sorted into subdirectories based on filename patterns or PDF content analysis:
+
+| Category | Subcategory | Rules & Keywords / Content Sniffing |
+| :--- | :--- | :--- |
+| **PDF** | `Ordem de Servico` | Filename: `ordem`, `servico`, `os_`, `os-`, `os `.<br>Content: `Ordem Técnica de Serviço`, `RURAL CONECTA`, `Ordem de Serviço` |
+| **PDF** | `Boletos` | Filename: `boleto`, `fatura`, `segundavia`, `2via`, `pagamento`, `mensalidade`, `itau`, `bradesco`, `santander`, `caixa`, `inter`, `nubank` |
+| **PDF** | `DRS` | Filename: `drs`, `relatorio_drs`, `relatorio-drs` |
+| **PDF** | `Atlas` | Filename: `atlas`, `viabilidade`, `projeto_atlas` |
+| **PDF** | `Marketing` | Filename: `marketing`, `campanha`, `publicidade`, `social` |
+| **PDF** | `Contratos` | Filename: `contrato`, `adesao`, `termo`, `aditivo` |
+| **PDF** | `Documentos Empresa` | Filename: `cnpj`, `alvara`, `estatuto`, `procuracao`, `certidao` |
+| **Planilhas** | `OS e Atendimentos` | Filename: `ordem`, `servico`, `os`, `atendimento`, `chamado`, `suporte` |
+| **Planilhas** | `Cobranca e Negativacao` | Filename: `cobranca`, `inadimplente`, `negativad`, `spc`, `serasa`, `devedor`, `suspens` |
+| **Planilhas** | `Equipamentos e Estoque` | Filename: `equipamento`, `estoque`, `retirada`, `roteador`, `onu`, `fibra` |
+| **Planilhas** | `Clientes e Contratos` | Filename: `cliente`, `cadastro`, `contrato`, `base`, `assinante` |
+| **Imagens** | `Banners e Marketing` | Filename: `banner`, `flyer`, `post`, `instagram`, `facebook`, `story`, `propaganda`, `campanha`, `anuncio` |
+| **Imagens** | `ChatGPT IA` | Filename: `chatgpt`, `dall-e`, `openai`, `midjourney`, `prompt` |
+| **Imagens** | `Logos e Icones` | Filename: `logo`, `icone`, `icon`, `marca`, `identidade`, `favicon` |
+| **Textos** | `Atlas e Desenvolvimento` | Filename: `atlas`, `dev`, `api`, `backend`, `frontend`, `daemon`, `script` |
+| **Textos** | `Rotas e Operacional` | Filename: `rota`, `tecnico`, `instalacao`, `manutencao`, `campo` |
+| **Textos** | `Clientes e Atendimento` | Filename: `cliente`, `mensagem`, `recado`, `contato`, `telefone` |
+
 ---
 
 ## Repository Structure
@@ -98,17 +128,19 @@ smart-downloads-daemon/
 │   ├── __init__.py                # Package version
 │   ├── __main__.py                # python -m smart_downloads_daemon support
 │   ├── cli.py                     # Command-line interface & argument parser
-│   ├── config.py                  # JSON config loader, pause & storage definitions
+│   ├── config.py                  # JSON config loader, subcategories & pause definitions
 │   ├── inotify.py                 # POSIX libc inotify ctypes wrapper & struct unpacking
 │   ├── migrator.py                # Batch storage migration engine across disks
-│   ├── sorter.py                  # Category classification, guards & collision renaming
+│   ├── organizer.py               # Batch reorganization into intelligent subcategories
+│   ├── sorter.py                  # Subcategory resolution, guards & collision renaming
 │   └── watcher.py                 # select.poll dynamic event loop & grace scheduling
 └── tests/
     ├── test_cli.py                # CLI commands, status, pause & lock tests
     ├── test_config.py             # Config loading, pause control & disk helpers
     ├── test_inotify.py            # Struct size & initialization tests
     ├── test_migrator.py           # Migration planning & collision tests
-    ├── test_sorter.py             # Classification, ignore rules & collision tests
+    ├── test_organizer.py          # Batch reorganize plan & collision tests
+    ├── test_sorter.py             # Subcategory classification, content sniffing & tests
     └── test_watcher.py            # File scheduling, pause & retry expiration tests
 ```
 
@@ -173,6 +205,15 @@ smart-downloads-daemon migrate --to /media/toru/96A10007A0FFEB9D
 # Execute batch migration and update config automatically:
 smart-downloads-daemon migrate --to /media/toru/96A10007A0FFEB9D --apply
 
+# Preview reorganizing files in destination categories into smart subdirectories (dry-run):
+smart-downloads-daemon organize
+
+# Execute smart directory reorganization:
+smart-downloads-daemon organize --apply
+
+# Reorganize a specific directory:
+smart-downloads-daemon organize --dir /media/toru/96A10007A0FFEB9D --apply
+
 # Run daemon in foreground (single-instance protected):
 smart-downloads-daemon --foreground
 
@@ -182,6 +223,23 @@ smart-downloads-daemon --scan-once
 # Override grace period cooldown for a session (e.g. 120 seconds):
 smart-downloads-daemon --grace-period 120
 ```
+
+---
+
+## Batch Directory Reorganization
+
+If you already have existing category folders (`PDF/`, `Planilhas/`, etc.) with files directly in the root or want to batch-reorganize them:
+
+```bash
+# Preview what would be organized without moving anything:
+smart-downloads-daemon organize
+
+# Apply the organization:
+smart-downloads-daemon organize --apply
+```
+
+* **Intelligent File & Content Inspection**: Checks filenames against subcategory keywords. For PDFs without obvious keywords in the filename, inspects the first page's text using `pdftotext` (e.g., detecting "Ordem Técnica de Serviço" inside client-named PDFs).
+* **Safe & Non-Destructive**: Files that do not match any subcategory keyword rules remain safe in the parent category directory. If a file with the same name exists at the destination, a collision-safe timestamp suffix (`_YYYYMMDD_HHMMSS`) is assigned.
 
 ---
 
@@ -213,6 +271,17 @@ Settings are saved in `~/.config/smart-downloads-daemon/config.json`:
     "Videos": ["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"],
     "Audios": ["mp3", "wav", "ogg", "flac", "m4a", "aac", "wma"],
     "Compactados": ["zip", "tar", "gz", "bz2", "7z", "rar", "xz", "iso"]
+  },
+  "subcategories": {
+    "PDF": {
+      "Ordem de Servico": {
+        "keywords": ["ordem", "servico", "os_", "os-", "os "],
+        "content_keywords": ["ordem técnica de serviço", "rural conecta", "ordem de serviço"]
+      },
+      "Boletos": {
+        "keywords": ["boleto", "fatura", "segundavia", "2via", "pagamento", "mensalidade"]
+      }
+    }
   },
   "ignore_extensions": [".aria2", ".crdownload", ".download", ".opdownload", ".part", ".tmp"]
 }

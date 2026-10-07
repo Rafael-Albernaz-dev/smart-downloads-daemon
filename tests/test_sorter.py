@@ -89,3 +89,65 @@ def test_move_file_repetitive_collision(tmp_path: Path):
     assert (planilhas_dest / f"data_{ts}.csv").read_text() == "first collision"
     assert moved.read_text() == "new data"
 
+
+def test_resolve_subcategory_by_filename(tmp_path: Path):
+    cfg = DaemonConfig(destination_dir=tmp_path / "Docs")
+
+    # PDF subcategories
+    assert get_destination_folder("fatura_outubro.pdf", cfg) == tmp_path / "Docs" / "PDF" / "Boletos"
+    assert get_destination_folder("segundavia_conta.pdf", cfg) == tmp_path / "Docs" / "PDF" / "Boletos"
+    assert get_destination_folder("drs-executivo.pdf", cfg) == tmp_path / "Docs" / "PDF" / "DRS"
+    assert get_destination_folder("atlas_viabilidade.pdf", cfg) == tmp_path / "Docs" / "PDF" / "Atlas"
+    assert get_destination_folder("marketing_metricas.pdf", cfg) == tmp_path / "Docs" / "PDF" / "Marketing"
+    assert get_destination_folder("contrato_adesao.pdf", cfg) == tmp_path / "Docs" / "PDF" / "Contratos"
+    assert get_destination_folder("cartao_cnpj.pdf", cfg) == tmp_path / "Docs" / "PDF" / "Documentos Empresa"
+
+    # Planilhas subcategories
+    assert get_destination_folder("relatorio-os-diarias.xlsx", cfg) == tmp_path / "Docs" / "Planilhas" / "OS e Atendimentos"
+    assert get_destination_folder("clientes_negativados.xlsx", cfg) == tmp_path / "Docs" / "Planilhas" / "Cobranca e Negativacao"
+    assert get_destination_folder("retirada-de-equipamentos.xlsx", cfg) == tmp_path / "Docs" / "Planilhas" / "Equipamentos e Estoque"
+    assert get_destination_folder("contratos-2026.xlsx", cfg) == tmp_path / "Docs" / "Planilhas" / "Clientes e Contratos"
+
+    # Imagens subcategories
+    assert get_destination_folder("banner_camera.png", cfg) == tmp_path / "Docs" / "Imagens" / "Banners e Marketing"
+    assert get_destination_folder("chatgpt_diagram.png", cfg) == tmp_path / "Docs" / "Imagens" / "ChatGPT IA"
+    assert get_destination_folder("logo_principal.png", cfg) == tmp_path / "Docs" / "Imagens" / "Logos e Icones"
+
+    # Textos subcategories
+    assert get_destination_folder("roadmap_atlas.md", cfg) == tmp_path / "Docs" / "Textos" / "Atlas e Desenvolvimento"
+    assert get_destination_folder("rota_de_hoje.txt", cfg) == tmp_path / "Docs" / "Textos" / "Rotas e Operacional"
+    assert get_destination_folder("lista_clientes.txt", cfg) == tmp_path / "Docs" / "Textos" / "Clientes e Atendimento"
+
+
+def test_resolve_subcategory_by_pdf_content(tmp_path: Path):
+    from unittest.mock import patch
+    cfg = DaemonConfig(destination_dir=tmp_path / "Docs")
+    pdf_source = tmp_path / "CARLA SIMOES DE OLIVEIRA.pdf"
+    pdf_source.write_text("dummy")
+
+    with patch(
+        "smart_downloads_daemon.sorter.extract_pdf_snippet",
+        return_value="RURAL CONECTA\nOrdem Técnica de Serviço\nOS: 8058\nDados do Cliente",
+    ):
+        dest = get_destination_folder("CARLA SIMOES DE OLIVEIRA.pdf", cfg, source_path=pdf_source)
+        assert dest == tmp_path / "Docs" / "PDF" / "Ordem de Servico"
+
+
+def test_move_file_into_subcategory(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs)
+    source_file = downloads / "fatura_luz.pdf"
+    source_file.write_text("boleto content")
+
+    moved = move_file("fatura_luz.pdf", cfg)
+    assert moved is not None
+    assert moved.exists()
+    assert moved == docs / "PDF" / "Boletos" / "fatura_luz.pdf"
+    assert moved.read_text() == "boleto content"
+    assert not source_file.exists()
+
+

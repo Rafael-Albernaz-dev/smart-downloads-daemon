@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from . import __version__
 from .config import DEFAULT_CONFIG_PATH, DaemonConfig
 from .migrator import Migrator, format_bytes
+from .organizer import Organizer
 from .sorter import get_destination_folder, is_valid_file
 from .watcher import Watcher
 
@@ -515,6 +516,76 @@ def run_migration_cli(
     return 0 if not result.errors else 1
 
 
+def run_organize_cli(
+    target_dir: Optional[Path],
+    dry_run: bool,
+    quiet: bool,
+    config: DaemonConfig,
+) -> int:
+    """Execute or simulate batch reorganization of existing category files into subcategories."""
+    organizer = Organizer(config)
+    plan = organizer.create_plan(target_dir=target_dir)
+
+    mode_title = "SMART REORGANIZATION (DRY RUN)" if dry_run else "SMART REORGANIZATION"
+    print("=" * 64)
+    print(f" SMART DOWNLOADS DAEMON - {mode_title}")
+    print("=" * 64)
+    print(f"Target Directory: {plan.target_dir}")
+    print("")
+
+    if not plan.items:
+        print("✓ All files are already organized into their appropriate subcategories!")
+        print("  Nothing to reorganize.")
+        print("=" * 64)
+        return 0
+
+    print("Reorganization Plan:")
+    for cat, info in plan.category_summary.items():
+        cnt = info["total_files"]
+        size_str = format_bytes(info["total_bytes"])
+        print(f"  • Category [{cat}] - {cnt} files ({size_str}):")
+        for subcat, scnt in sorted(info["subcategories"].items(), key=lambda x: -x[1]):
+            print(f"      -> {subcat:<26}: {scnt:>4} files")
+
+    print("-" * 64)
+    print(f"Total to organize: {plan.total_files} files ({format_bytes(plan.total_bytes)})")
+    print("")
+
+    if dry_run:
+        print("[DRY RUN] No files were moved. To execute this reorganization, re-run with --apply:")
+        print(f"  smart-downloads-daemon organize --apply")
+        print("=" * 64)
+        return 0
+
+    print("Executing reorganization...")
+    last_cat = None
+
+    def on_progress(item, current, total):
+        nonlocal last_cat
+        if not quiet:
+            if item.category != last_cat:
+                last_cat = item.category
+                print(f"\nOrganizing category [{item.category}]:")
+            pct = int((current / total) * 100)
+            print(f"  [{pct:>3}%] {item.category}/{item.source_path.name} -> {item.target_dir.name}/")
+            sys.stdout.flush()
+
+    result = organizer.execute_plan(plan, dry_run=False, progress_callback=on_progress)
+    print("")
+    print("-" * 64)
+    print("Reorganization Summary:")
+    print(f"  ✓ Files organized:        {result.files_moved} / {result.total_files_planned}")
+    print(f"  ✓ Data volume processed:  {format_bytes(result.bytes_moved)}")
+    if result.collisions_resolved > 0:
+        print(f"  ✓ Collisions protected:   {result.collisions_resolved} (safely renamed with timestamp)")
+    if result.errors:
+        print(f"  ! Errors:                 {len(result.errors)}")
+        for err in result.errors[:5]:
+            print(f"    - {err}")
+    print("=" * 64)
+    return 0 if not result.errors else 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="smart-downloads-daemon",
@@ -568,6 +639,13 @@ def main() -> None:
     # Subcommand: mount
     subparsers.add_parser("mount", help="Attempt to mount destination drive if unmounted")
 
+    # Subcommand: organize
+    organize_parser = subparsers.add_parser("organize", help="Reorganize existing files into smart subcategories")
+    organize_parser.add_argument("--dir", dest="target_dir", type=Path, help="Target storage directory (defaults to current destination_dir)")
+    organize_parser.add_argument("--apply", action="store_true", help="Execute reorganization (default is dry-run)")
+    organize_parser.add_argument("--dry-run", action="store_true", help="Simulate reorganization without modifying files (default)")
+    organize_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress per-file progress output")
+
     # Subcommand: config
     config_parser = subparsers.add_parser("config", help="View or modify daemon configuration")
     config_parser.add_argument("--show", action="store_true", help="Display current configuration and storage metrics")
@@ -609,6 +687,18 @@ def main() -> None:
     # Handle 'mount' command
     if args.command == "mount":
         sys.exit(run_mount_cli(config))
+
+    # Handle 'organize' command
+    if args.command == "organize":
+        target = (args.target_dir or config.destination_dir).expanduser().resolve()
+        dry_run = not args.apply
+        exit_code = run_organize_cli(
+            target_dir=target,
+            dry_run=dry_run,
+            quiet=args.quiet,
+            config=config,
+        )
+        sys.exit(exit_code)
 
     # Handle 'config' command
     if args.command == "config":

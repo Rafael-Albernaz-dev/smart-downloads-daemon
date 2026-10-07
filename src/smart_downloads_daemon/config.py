@@ -31,6 +31,135 @@ DEFAULT_IGNORE_EXTENSIONS: Set[str] = {
     ".aria2",
 }
 
+DEFAULT_SUBCATEGORIES: Dict[str, Dict[str, Dict[str, List[str]]]] = {
+    "PDF": {
+        "Ordem de Servico": {
+            "keywords": ["ordem de servico", "ordem tecnica", "os", "atendimento", "relatorio_lucas"],
+            "content_keywords": [
+                "ordem tecnica de servico",
+                "ordem de servico",
+                "dados do cliente",
+                "aberto por:",
+                "remuneracao por o.s",
+            ],
+        },
+        "Boletos": {
+            "keywords": [
+                "boleto",
+                "segundavia",
+                "segundasvia",
+                "fatura",
+                "saneamento",
+                "duplicata",
+                "mensalidade",
+                "guia",
+                "comprovante",
+            ],
+            "content_keywords": [
+                "linha digitavel",
+                "beneficiario",
+                "comprovante de pagamento",
+                "companhia de saneamento",
+                "vencimento",
+            ],
+        },
+        "DRS": {
+            "keywords": ["drs", "documento mestre", "documento-mestre"],
+            "content_keywords": ["drs executivo", "documento mestre"],
+        },
+        "Atlas": {
+            "keywords": ["atlas", "viabilidade", "ptp-manual", "ptp", "atlas-platform"],
+            "content_keywords": ["atlas viabilidade", "atlas platform", "ptp manual"],
+        },
+        "Marketing": {
+            "keywords": [
+                "marketing",
+                "metricas",
+                "funis",
+                "landing page",
+                "lp",
+                "conversao",
+                "banner",
+                "logo",
+                "guia compacto",
+            ],
+            "content_keywords": ["marketing", "landing page", "conversao", "playhub", "canais"],
+        },
+        "Contratos": {
+            "keywords": ["contrato", "termo de adesao", "termo", "adesao"],
+            "content_keywords": ["contrato de prestacao", "termo de adesao", "clausula"],
+        },
+        "Documentos Empresa": {
+            "keywords": ["cnpj", "cartao cnpj", "onboarding", "institucional"],
+            "content_keywords": ["cadastro nacional da pessoa juridica", "comprovante de inscricao"],
+        },
+    },
+    "Planilhas": {
+        "OS e Atendimentos": {
+            "keywords": ["os-diarias", "os_diarias", "relatorio-os", "relatorio_os", "suporte tecnico", "formulario de suporte"],
+        },
+        "Cobranca e Negativacao": {
+            "keywords": ["negativad", "cobranca", "protesto", "suspensos", "cancelad", "starlink"],
+        },
+        "Equipamentos e Estoque": {
+            "keywords": ["retirada", "estoque", "equipamento", "equips", "torres", "torre"],
+        },
+        "Clientes e Contratos": {
+            "keywords": ["cliente", "contrato", "autenticacao", "localizac", "plano", "campanha"],
+        },
+    },
+    "Imagens": {
+        "ChatGPT IA": {
+            "keywords": ["chatgpt", "midjourney", "dall-e", "imagem do chatgpt"],
+        },
+        "Logos e Icones": {
+            "keywords": ["logo", "icone", "icon"],
+        },
+        "Banners e Marketing": {
+            "keywords": ["banner", "camera", "alarme", "conecta", "indique e ganhe", "negociar", "propaganda"],
+        },
+        "Screenshots e Prints": {
+            "keywords": ["screenshot", "captura", "2026-09-", "2026-10-", "2026-11-", "2026-12-", "2026-08-", "2025-"],
+        },
+    },
+    "Textos": {
+        "Atlas e Desenvolvimento": {
+            "keywords": [
+                "atlas",
+                "roadmap",
+                "auditoria",
+                "vite",
+                "spec",
+                "dev_orchestrator",
+                "skills",
+                "hermes",
+                "radar",
+                "codex",
+                "mcp",
+                "soul",
+                "prompt",
+                "typescript",
+            ],
+        },
+        "Rotas e Operacional": {
+            "keywords": [
+                "rota",
+                "agenda",
+                "suporte",
+                "equipamento",
+                "equips",
+                "enlaces",
+                "fibra",
+                "instalacao",
+                "custo",
+            ],
+        },
+        "Clientes e Atendimento": {
+            "keywords": ["cliente", "cancelamento", "dossie", "feedback", "atendimento"],
+        },
+    },
+}
+
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "smart-downloads-daemon"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
 DEFAULT_PAUSE_PATH = DEFAULT_CONFIG_DIR / "paused"
@@ -113,6 +242,12 @@ class DaemonConfig:
     destination_dir: Path = field(default_factory=lambda: Path.home() / "Documents")
     grace_period_seconds: int = 300
     categories: Dict[str, List[str]] = field(default_factory=lambda: dict(DEFAULT_CATEGORIES))
+    subcategories: Dict[str, Dict[str, Dict[str, List[str]]]] = field(
+        default_factory=lambda: {
+            cat: {sub: dict(defs) for sub, defs in subs.items()}
+            for cat, subs in DEFAULT_SUBCATEGORIES.items()
+        }
+    )
     ignore_extensions: Set[str] = field(default_factory=lambda: set(DEFAULT_IGNORE_EXTENSIONS))
     config_dir: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR)
 
@@ -146,6 +281,8 @@ class DaemonConfig:
                     cfg.grace_period_seconds = int(data["grace_period_seconds"])
                 if "categories" in data and isinstance(data["categories"], dict):
                     cfg.categories = data["categories"]
+                if "subcategories" in data and isinstance(data["subcategories"], dict):
+                    cfg.subcategories = data["subcategories"]
                 if "ignore_extensions" in data and isinstance(data["ignore_extensions"], list):
                     cfg.ignore_extensions = set(data["ignore_extensions"])
             except Exception as e:
@@ -161,6 +298,7 @@ class DaemonConfig:
             "destination_dir": str(self.destination_dir),
             "grace_period_seconds": self.grace_period_seconds,
             "categories": self.categories,
+            "subcategories": self.subcategories,
             "ignore_extensions": sorted(list(self.ignore_extensions)),
         }
         with open(path, "w", encoding="utf-8") as f:

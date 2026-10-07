@@ -1,18 +1,79 @@
 """
-File classification, guard-rail filtering, and collision-safe moving.
+File classification, guard-rail filtering, subcategory resolution, and collision-safe moving.
 """
 
 import shutil
+import subprocess
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from .config import DaemonConfig
 
+
+def normalize_text(text: str) -> str:
+    """Normalize text removing accents and converting to lowercase."""
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in text if not unicodedata.combining(c)).lower()
+
+
+def extract_pdf_snippet(pdf_path: Path, max_chars: int = 1000) -> str:
+    """Extract first-page text snippet from a PDF file using pdftotext if available."""
+    try:
+        res = subprocess.run(
+            ["pdftotext", "-l", "1", str(pdf_path), "-"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if res.returncode == 0:
+            return res.stdout[:max_chars]
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_subcategory(
+    category: str,
+    filename: str,
+    config: DaemonConfig,
+    source_path: Optional[Path] = None,
+) -> Optional[str]:
+    """Determine subcategory name based on configured keyword rules and content inspection."""
+    cat_rules = config.subcategories.get(category)
+    if not cat_rules:
+        return None
+
+    name_norm = normalize_text(filename)
+
+    # 1. Match by filename keywords
+    for subcat_name, rule_def in cat_rules.items():
+        keywords = rule_def.get("keywords", [])
+        for kw in keywords:
+            kw_norm = normalize_text(kw)
+            if kw_norm and kw_norm in name_norm:
+                return subcat_name
+
+    # 2. For PDF files, inspect content if source_path is available
+    if category == "PDF" and source_path and source_path.is_file():
+        pdf_text = extract_pdf_snippet(source_path)
+        if pdf_text:
+            content_norm = normalize_text(pdf_text)
+            for subcat_name, rule_def in cat_rules.items():
+                content_kws = rule_def.get("content_keywords", [])
+                for kw in content_kws:
+                    kw_norm = normalize_text(kw)
+                    if kw_norm and kw_norm in content_norm:
+                        return subcat_name
+
+    return None
+
+
 def is_valid_file(filename: str, config: DaemonConfig) -> bool:
     """Check if a filename should be processed or skipped."""
-    if filename.startswith(".") or filename.endswith("~") or filename.endswith("#"):
+    if not filename or filename.startswith(".") or filename.endswith("~") or filename.endswith("#"):
         return False
     fn_lower = filename.lower()
     for bad_ext in config.ignore_extensions:
@@ -20,20 +81,34 @@ def is_valid_file(filename: str, config: DaemonConfig) -> bool:
             return False
     return True
 
-def get_destination_folder(filename: str, config: DaemonConfig) -> Path:
-    """Determine the destination folder based on file extension."""
+
+def get_destination_folder(
+    filename: str,
+    config: DaemonConfig,
+    source_path: Optional[Path] = None,
+) -> Path:
+    """Determine destination category and subcategory folder."""
     ext = Path(filename).suffix.strip().lower().lstrip(".")
-    if not ext:
+    target_category: Optional[str] = None
+
+    if ext:
+        for category, extensions in config.categories.items():
+            if ext in extensions:
+                target_category = category
+                break
+
+    if not target_category:
         return config.destination_dir / "Outros"
 
-    for category, extensions in config.categories.items():
-        if ext in extensions:
-            return config.destination_dir / category
+    subcat = resolve_subcategory(target_category, filename, config, source_path=source_path)
+    if subcat:
+        return config.destination_dir / target_category / subcat
 
-    return config.destination_dir / "Outros"
+    return config.destination_dir / target_category
+
 
 def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
-    """Move a file to its destination category folder with collision resolution."""
+    """Move a file to its destination category/subcategory folder with collision resolution."""
     source_path = config.downloads_dir / filename
     if not source_path.is_file():
         return None
@@ -46,7 +121,7 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
         sys.stderr.flush()
         return None
 
-    dest_folder = get_destination_folder(filename, config)
+    dest_folder = get_destination_folder(filename, config, source_path=source_path)
     dest_folder.mkdir(parents=True, exist_ok=True)
 
     dest_file = dest_folder / filename
@@ -69,3 +144,4 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
         print(f"[ERROR] Failed to move {filename}: {e}", file=sys.stderr)
         sys.stderr.flush()
         return None
+
