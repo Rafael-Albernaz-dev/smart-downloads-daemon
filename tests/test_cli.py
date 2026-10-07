@@ -83,3 +83,19 @@ def test_run_mount_cli_when_already_available(tmp_path: Path):
     cfg = DaemonConfig(destination_dir=dest, config_dir=tmp_path)
     ret = run_mount_cli(cfg)
     assert ret == 0
+
+
+def test_smartdown_cli_help():
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-m", "smart_downloads_daemon.cli", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "usage: smartdown" in result.stdout
+    assert "organize" in result.stdout
+    assert "status" in result.stdout
+    assert "pause" in result.stdout
+    assert "resume" in result.stdout
+

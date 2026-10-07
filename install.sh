@@ -4,12 +4,13 @@ set -euo pipefail
 TARGET_BIN_DIR="${HOME}/.local/bin"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_TARGET="${TARGET_BIN_DIR}/smart-downloads-daemon"
+BIN_TARGET="${TARGET_BIN_DIR}/smartdown"
+COMPAT_BIN_TARGET="${TARGET_BIN_DIR}/smart-downloads-daemon"
 
-echo "=== Installing smart-downloads-daemon ==="
+echo "=== Installing smartdown (smart-downloads-daemon) ==="
 mkdir -p "${TARGET_BIN_DIR}" "${SYSTEMD_USER_DIR}"
 
-# 1. Install executable runner pointing to src/
+# 1. Install primary smartdown executable runner pointing to src/
 cat << EOF > "${BIN_TARGET}"
 #!/usr/bin/env python3
 import sys
@@ -25,11 +26,13 @@ if __name__ == "__main__":
     main()
 EOF
 chmod +x "${BIN_TARGET}"
-echo "✓ Installed executable to ${BIN_TARGET}"
+echo "✓ Installed executable: ${BIN_TARGET}"
 
-# 2. Compatibility symlink for organize_downloads.py
+# 2. Compatibility symlinks for smart-downloads-daemon and legacy scripts
+ln -sf "${BIN_TARGET}" "${COMPAT_BIN_TARGET}"
+echo "✓ Created alias symlink: ${COMPAT_BIN_TARGET} -> smartdown"
 ln -sf "${BIN_TARGET}" "${TARGET_BIN_DIR}/organize_downloads.py"
-echo "✓ Created compatibility symlink: ${TARGET_BIN_DIR}/organize_downloads.py -> smart-downloads-daemon"
+echo "✓ Created compatibility symlink: ${TARGET_BIN_DIR}/organize_downloads.py -> smartdown"
 
 # 3. Clean up legacy service if active/enabled, and install modern systemd user service unit
 LEGACY_SERVICE="downloads-organizer.service"
@@ -61,6 +64,13 @@ else
   echo "! Warning: Background daemon is not active. Check 'journalctl --user -u smart-downloads-daemon -n 20'"
 fi
 
+echo ""
+echo "=== Quick CLI Commands ==="
+echo "  smartdown status     # View daemon status & queue"
+echo "  smartdown pause      # Temporarily pause automatic sorting"
+echo "  smartdown resume     # Resume automatic sorting"
+echo "  smartdown organize   # Organize existing downloads into smart subdirectories"
+echo "  smartdown mount      # Mount storage drive if disconnected"
 echo ""
 echo "=== Systemd Service Management ==="
 echo "To check daemon status:"

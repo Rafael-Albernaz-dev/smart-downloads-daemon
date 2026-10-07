@@ -255,7 +255,7 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
             try:
                 resolved_dev = dest_device.resolve()
                 print(f"                  Device detected: {resolved_dev} ({dest_device.name})")
-                print("                  Tip: Run 'smart-downloads-daemon mount' to mount it automatically.")
+                print("                  Tip: Run 'smartdown mount' to mount it automatically.")
             except Exception:
                 pass
         else:
@@ -290,13 +290,13 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
 
     print("-" * 64)
     if is_paused:
-        print("👉 Tip: Run 'smart-downloads-daemon resume' to reactivate automated sorting.")
+        print("👉 Tip: Run 'smartdown resume' to reactivate automated sorting.")
     elif not dest_available:
-        print("👉 Tip: Run 'smart-downloads-daemon mount' to connect the storage destination.")
+        print("👉 Tip: Run 'smartdown mount' to connect the storage destination.")
     elif not svc_info["active"]:
         print("👉 Tip: Run 'systemctl --user start smart-downloads-daemon' to start daemon.")
     else:
-        print("💡 Controls: 'smart-downloads-daemon pause' to hold files | 'status' to refresh")
+        print("💡 Controls: 'smartdown pause' to hold files | 'smartdown status' to refresh")
     print("=" * 64)
 
 
@@ -312,7 +312,7 @@ def run_pause_cli(config: DaemonConfig, reason: str = "") -> int:
         print(f"Reason: {reason}")
     print("")
     print("To resume automated sorting at any time, run:")
-    print("  smart-downloads-daemon resume")
+    print("  smartdown resume")
     print("=" * 64)
     return 0
 
@@ -327,7 +327,7 @@ def run_resume_cli(config: DaemonConfig) -> int:
     print(f"Files in '{config.downloads_dir}' will be organized according to the grace period.")
     print("")
     print("To check queue status, run:")
-    print("  smart-downloads-daemon status")
+    print("  smartdown status")
     print("=" * 64)
     return 0
 
@@ -466,7 +466,7 @@ def run_migration_cli(
 
     if dry_run:
         print("[DRY RUN] No files were moved. To execute this migration, re-run with --apply:")
-        print(f"  smart-downloads-daemon migrate --to \"{to_dir}\" --apply")
+        print(f"  smartdown migrate --to \"{to_dir}\" --apply")
         print("=" * 64)
         return 0
 
@@ -553,7 +553,7 @@ def run_organize_cli(
 
     if dry_run:
         print("[DRY RUN] No files were moved. To execute this reorganization, re-run with --apply:")
-        print(f"  smart-downloads-daemon organize --apply")
+        print(f"  smartdown organize --apply")
         print("=" * 64)
         return 0
 
@@ -588,7 +588,7 @@ def run_organize_cli(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="smart-downloads-daemon",
+        prog="smartdown",
         description="Zero-dependency Linux inotify daemon for automated Downloads sorting with grace period, pause control, and storage management.",
     )
     parser.add_argument(
@@ -758,29 +758,30 @@ def main() -> None:
     # If invoked directly with no subcommands and not launched by systemd:
     if "INVOCATION_ID" not in os.environ and is_user_service_active() and not args.foreground:
         print("=" * 64)
-        print(" smart-downloads-daemon is already running in the background.")
+        print(" smartdown is already running in the background.")
         print("=" * 64)
         print("Useful commands:")
-        print("  smart-downloads-daemon status   # View current state, queue, and destination health")
-        print("  smart-downloads-daemon pause    # Temporarily hold downloads (suspend sorting)")
-        print("  smart-downloads-daemon resume   # Resume automated file sorting")
-        print("  smart-downloads-daemon mount    # Auto-mount destination drive if unmounted")
-        print("  smart-downloads-daemon config   # View or modify configuration")
-        print("  smart-downloads-daemon migrate  # Move categories across storage")
+        print("  smartdown status    # View current state, queue, and destination health")
+        print("  smartdown pause     # Temporarily hold downloads (suspend sorting)")
+        print("  smartdown resume    # Resume automated file sorting")
+        print("  smartdown mount     # Auto-mount destination drive if unmounted")
+        print("  smartdown organize  # Reorganize categories into smart subdirectories")
+        print("  smartdown config    # View or modify configuration")
+        print("  smartdown migrate   # Move categories across storage")
         print("")
         print("To stop or restart the background service:")
         print("  systemctl --user stop smart-downloads-daemon")
         print("  systemctl --user restart smart-downloads-daemon")
         print("")
         print("To run in foreground anyway:")
-        print("  smart-downloads-daemon --foreground")
+        print("  smartdown --foreground")
         print("=" * 64)
         sys.exit(0)
 
     lock_fp = acquire_instance_lock(config.lock_file)
     if lock_fp is None:
         print(
-            "[ERROR] Another foreground instance of smart-downloads-daemon is already running.",
+            "[ERROR] Another foreground instance of smartdown is already running.",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -35,6 +35,7 @@ dev = [
 ]
 
 [project.scripts]
+smartdown = "smart_downloads_daemon.cli:main"
 smart-downloads-daemon = "smart_downloads_daemon.cli:main"
 
 [tool.setuptools.packages.find]

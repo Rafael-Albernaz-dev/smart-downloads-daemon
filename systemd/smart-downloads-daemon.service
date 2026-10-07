@@ -5,11 +5,11 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/smart-downloads-daemon
+ExecStart=%h/.local/bin/smartdown
 Restart=on-failure
 RestartSec=5s
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=default.target
-Alias=downloads-organizer.service
+Alias=downloads-organizer.service smartdown.service

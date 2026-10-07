@@ -28,10 +28,10 @@ Most automated download organizers suffer from critical usability and architectu
 * **0% Idle CPU (`select.poll`)**: The event loop sleeps in the kernel until an actual I/O event occurs or the next file cooldown expires. Zero busy-waiting.
 * **Smart Grace Period (5-Minute Cooldown)**: Files remain immediately available in `~/Downloads` for quick access. Only after 5 minutes of inactivity are they silently moved to their permanent home in `~/Documents`.
 * **Smart Subcategories & Content Sniffing**: Files are classified into context-aware subfolders (e.g. `PDF/Ordem de Servico`, `PDF/Boletos`, `Planilhas/Cobranca e Negativacao`) via keyword matching and non-intrusive PDF content sniffing (via native `pdftotext`).
-* **Batch Directory Reorganization**: Reorganize existing flat category folders into the new subcategory structure safely with `smart-downloads-daemon organize` (`--dry-run` and `--apply`).
-* **Pause & Resume Controls**: Easily suspend sorting (`smart-downloads-daemon pause`) when working with temporary downloads and resume (`smart-downloads-daemon resume`) when ready.
-* **Mount Guard & Auto-Recovery**: If a secondary/external drive is unmounted, holds downloads safely in `~/Downloads` without log spam, and auto-mounts on demand (`smart-downloads-daemon mount`).
-* **Live Status Dashboard**: View countdown timers for pending downloads, service uptime, paused state, and disk health with `smart-downloads-daemon status` (or `--json`).
+* **Batch Directory Reorganization**: Reorganize existing flat category folders into the new subcategory structure safely with `smartdown organize` (`--dry-run` and `--apply`).
+* **Pause & Resume Controls**: Easily suspend sorting (`smartdown pause`) when working with temporary downloads and resume (`smartdown resume`) when ready.
+* **Mount Guard & Auto-Recovery**: If a secondary/external drive is unmounted, holds downloads safely in `~/Downloads` without log spam, and auto-mounts on demand (`smartdown mount`).
+* **Live Status Dashboard**: View countdown timers for pending downloads, service uptime, paused state, and disk health with `smartdown status` (or `--json`).
 * **In-Flight Download Guards**: Automatically ignores incomplete browser downloads (`.crdownload`, `.part`, `.tmp`, `.download`) until writing has completely finished (`IN_CLOSE_WRITE` / `IN_MOVED_TO`).
 * **Timestamped Collision Protection**: If `report.pdf` already exists in `~/Documents/PDF/Relatorios`, the new file is automatically renamed to `report_YYYYMMDD_HHMMSS.pdf` without overwriting data.
 * **Single-Instance Protection**: Prevents duplicate concurrent daemon processes with automatic background service detection and POSIX lockfile guards.
@@ -175,53 +175,53 @@ journalctl --user -u smart-downloads-daemon -f
 
 ## CLI Usage
 
-The executable provides commands for daemon monitoring, pause control, configuration, and storage migration:
+The executable provides the concise `smartdown` command (with `smart-downloads-daemon` kept as a backwards-compatible alias) for daemon monitoring, pause control, configuration, and storage reorganization:
 
 ```bash
 # View comprehensive daemon status, operating mode, disk health, and queue:
-smart-downloads-daemon status
+smartdown status
 
 # Export live status and metrics as JSON:
-smart-downloads-daemon status --json
+smartdown status --json
 
 # Temporarily pause automated file sorting (holds all downloads in ~/Downloads):
-smart-downloads-daemon pause
+smartdown pause
 
 # Resume automated file sorting:
-smart-downloads-daemon resume
+smartdown resume
 
 # Automatically mount destination partition if disconnected/unmounted:
-smart-downloads-daemon mount
-
-# View active configuration, directories, and storage free space:
-smart-downloads-daemon config --show
-
-# Change destination directory on the fly (saves config and reloads daemon):
-smart-downloads-daemon config --set-destination /media/toru/96A10007A0FFEB9D
-
-# Preview batch migration of existing organized folders (dry-run):
-smart-downloads-daemon migrate --to /media/toru/96A10007A0FFEB9D
-
-# Execute batch migration and update config automatically:
-smart-downloads-daemon migrate --to /media/toru/96A10007A0FFEB9D --apply
+smartdown mount
 
 # Preview reorganizing files in destination categories into smart subdirectories (dry-run):
-smart-downloads-daemon organize
+smartdown organize
 
 # Execute smart directory reorganization:
-smart-downloads-daemon organize --apply
+smartdown organize --apply
 
 # Reorganize a specific directory:
-smart-downloads-daemon organize --dir /media/toru/96A10007A0FFEB9D --apply
+smartdown organize --dir /media/toru/96A10007A0FFEB9D --apply
+
+# View active configuration, directories, and storage free space:
+smartdown config --show
+
+# Change destination directory on the fly (saves config and reloads daemon):
+smartdown config --set-destination /media/toru/96A10007A0FFEB9D
+
+# Preview batch migration of existing organized folders (dry-run):
+smartdown migrate --to /media/toru/96A10007A0FFEB9D
+
+# Execute batch migration and update config automatically:
+smartdown migrate --to /media/toru/96A10007A0FFEB9D --apply
 
 # Run daemon in foreground (single-instance protected):
-smart-downloads-daemon --foreground
+smartdown --foreground
 
 # Perform a single scan to organize eligible files, then exit:
-smart-downloads-daemon --scan-once
+smartdown --scan-once
 
 # Override grace period cooldown for a session (e.g. 120 seconds):
-smart-downloads-daemon --grace-period 120
+smartdown --grace-period 120
 ```
 
 ---
@@ -232,10 +232,10 @@ If you already have existing category folders (`PDF/`, `Planilhas/`, etc.) with 
 
 ```bash
 # Preview what would be organized without moving anything:
-smart-downloads-daemon organize
+smartdown organize
 
 # Apply the organization:
-smart-downloads-daemon organize --apply
+smartdown organize --apply
 ```
 
 * **Intelligent File & Content Inspection**: Checks filenames against subcategory keywords. For PDFs without obvious keywords in the filename, inspects the first page's text using `pdftotext` (e.g., detecting "Ordem Técnica de Serviço" inside client-named PDFs).
