@@ -180,6 +180,21 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
             pass
 
     recent_moves = state_data.get("recent_moves", [])
+    if not recent_moves:
+        try:
+            from smart_downloads_daemon.history import load_history
+            hist = load_history(config, limit=5, reverse=True)
+            recent_moves = [
+                {
+                    "file": h.get("source", ""),
+                    "destination": h.get("destination", ""),
+                    "timestamp": h.get("timestamp", ""),
+                    "action": h.get("action", "move"),
+                }
+                for h in reversed(hist)
+            ]
+        except Exception:
+            pass
 
     if as_json:
         data = {
@@ -285,8 +300,9 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
             ts = mv.get("timestamp", "")
             fname = mv.get("file", "")
             dest_path = mv.get("destination", "")
+            act = mv.get("action", "move").upper()
             dest_name = Path(dest_path).parent.name if dest_path else ""
-            print(f"  • {ts}: '{fname}' -> {dest_name}/")
+            print(f"  • {ts} [{act}]: '{fname}' -> {dest_name}/")
 
     print("-" * 64)
     if is_paused:
@@ -296,7 +312,7 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
     elif not svc_info["active"]:
         print("👉 Tip: Run 'systemctl --user start smart-downloads-daemon' to start daemon.")
     else:
-        print("💡 Controls: 'smartdown pause' to hold files | 'smartdown status' to refresh")
+        print("💡 Controls: 'smartdown pause' | 'smartdown logs' (history) | 'status' (refresh)")
     print("=" * 64)
 
 
@@ -372,6 +388,79 @@ def run_mount_cli(config: DaemonConfig) -> int:
             print("  Please make sure the drive is connected or check 'lsblk'.")
         print("=" * 64)
         return 1
+
+
+def run_logs_cli(
+    config: DaemonConfig,
+    limit: int = 25,
+    show_all: bool = False,
+    follow: bool = False,
+    action: Optional[str] = None,
+    category: Optional[str] = None,
+    clear: bool = False,
+    as_json: bool = False,
+) -> int:
+    """Display or stream activity logs."""
+    from smart_downloads_daemon.history import (
+        clear_history,
+        follow_history,
+        format_log_entry,
+        load_history,
+    )
+
+    if clear:
+        if clear_history(config):
+            print("✓ History logs cleared successfully.")
+            return 0
+        else:
+            return 1
+
+    if follow:
+        follow_history(config, limit=limit, action=action, category=category)
+        return 0
+
+    effective_limit = None if show_all or limit <= 0 else limit
+    entries = load_history(
+        config,
+        limit=effective_limit,
+        action=action,
+        category=category,
+        reverse=True,
+    )
+
+    if as_json:
+        print(json.dumps(entries, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 80)
+    print(" SMARTDOWN - RECENT ACTIVITY LOGS")
+    print("=" * 80)
+
+    filters = []
+    if action:
+        filters.append(f"action={action}")
+    if category:
+        filters.append(f"category={category}")
+    filter_desc = f" [Filters: {', '.join(filters)}]" if filters else ""
+
+    if not entries:
+        print(f"No activity logs found.{filter_desc}")
+        print("=" * 80)
+        return 0
+
+    total_str = f"Showing {len(entries)} entries{filter_desc}:"
+    print(total_str)
+    print("")
+    print(f"  {'TIMESTAMP':<19}  {'ACTION':<10}  {'CATEGORY':<24}  {'FILE -> DESTINATION'}")
+    print("  " + "-" * 76)
+
+    for entry in entries:
+        print(format_log_entry(entry))
+
+    print("-" * 80)
+    print("💡 Tips: 'smartdown logs -n 50' | 'smartdown logs -f' (live follow) | 'smartdown logs --json'")
+    print("=" * 80)
+    return 0
 
 
 def show_config(config: DaemonConfig, config_path: Optional[Path] = None) -> None:
@@ -663,6 +752,16 @@ def main() -> None:
     migrate_parser.add_argument("--no-update-config", action="store_true", help="Do not update destination_dir in config.json after migration")
     migrate_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress per-file progress output")
 
+    # Subcommand: logs & log
+    logs_parser = subparsers.add_parser("logs", aliases=["log"], help="Show recent file organization and migration history")
+    logs_parser.add_argument("-n", "--limit", type=int, default=25, help="Number of log entries to display (default: 25)")
+    logs_parser.add_argument("--all", action="store_true", help="Display all historical logs")
+    logs_parser.add_argument("-f", "--follow", action="store_true", help="Follow live activity logs in real-time (tail -f)")
+    logs_parser.add_argument("--action", type=str, choices=["move", "organize", "migrate"], help="Filter by action type")
+    logs_parser.add_argument("--category", type=str, help="Filter by category (e.g. PDF, Planilhas)")
+    logs_parser.add_argument("--clear", action="store_true", help="Clear historical logs")
+    logs_parser.add_argument("--json", action="store_true", help="Output logs in JSON format")
+
     args = parser.parse_args()
 
     config = DaemonConfig.load(args.config)
@@ -747,6 +846,21 @@ def main() -> None:
         )
         sys.exit(exit_code)
 
+    # Handle 'logs' / 'log' command
+    if args.command in ("logs", "log"):
+        sys.exit(
+            run_logs_cli(
+                config=config,
+                limit=args.limit,
+                show_all=args.all,
+                follow=args.follow,
+                action=args.action,
+                category=args.category,
+                clear=args.clear,
+                as_json=args.json,
+            )
+        )
+
     # Standard Daemon / Scan-Once mode
     if args.scan_once:
         print(f"[SCAN] Running one-time scan on {config.downloads_dir}...")
@@ -762,6 +876,7 @@ def main() -> None:
         print("=" * 64)
         print("Useful commands:")
         print("  smartdown status    # View current state, queue, and destination health")
+        print("  smartdown logs      # View recent migration and organization history")
         print("  smartdown pause     # Temporarily hold downloads (suspend sorting)")
         print("  smartdown resume    # Resume automated file sorting")
         print("  smartdown mount     # Auto-mount destination drive if unmounted")

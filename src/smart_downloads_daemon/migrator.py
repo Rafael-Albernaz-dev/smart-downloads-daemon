@@ -164,6 +164,20 @@ class Migrator:
                     item.source_path.unlink()
                     result.files_moved += 1
                     result.bytes_moved += item.size_bytes
+
+                    try:
+                        from smart_downloads_daemon.history import record_event
+                        record_event(
+                            config=self.config,
+                            action="migrate",
+                            source=item.source_path.name,
+                            destination=dest_file,
+                            category=item.category,
+                            size_bytes=item.size_bytes,
+                            collision=(dest_file.name != item.target_path.name),
+                        )
+                    except Exception:
+                        pass
                 else:
                     result.errors.append(f"Verification failed after copy: {item.source_path} -> {dest_file}")
             except Exception as e:

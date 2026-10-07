@@ -29,6 +29,7 @@ Most automated download organizers suffer from critical usability and architectu
 * **Smart Grace Period (5-Minute Cooldown)**: Files remain immediately available in `~/Downloads` for quick access. Only after 5 minutes of inactivity are they silently moved to their permanent home in `~/Documents`.
 * **Smart Subcategories & Content Sniffing**: Files are classified into context-aware subfolders (e.g. `PDF/Ordem de Servico`, `PDF/Boletos`, `Planilhas/Cobranca e Negativacao`) via keyword matching and non-intrusive PDF content sniffing (via native `pdftotext`).
 * **Batch Directory Reorganization**: Reorganize existing flat category folders into the new subcategory structure safely with `smartdown organize` (`--dry-run` and `--apply`).
+* **Full Activity Logs & Migration History**: View persistent, complete history of all organized and migrated files with `smartdown logs`, supporting real-time streaming (`-f`), filtering, and JSON export.
 * **Pause & Resume Controls**: Easily suspend sorting (`smartdown pause`) when working with temporary downloads and resume (`smartdown resume`) when ready.
 * **Mount Guard & Auto-Recovery**: If a secondary/external drive is unmounted, holds downloads safely in `~/Downloads` without log spam, and auto-mounts on demand (`smartdown mount`).
 * **Live Status Dashboard**: View countdown timers for pending downloads, service uptime, paused state, and disk health with `smartdown status` (or `--json`).
@@ -129,6 +130,7 @@ smart-downloads-daemon/
 │   ├── __main__.py                # python -m smart_downloads_daemon support
 │   ├── cli.py                     # Command-line interface & argument parser
 │   ├── config.py                  # JSON config loader, subcategories & pause definitions
+│   ├── history.py                 # Persistent activity logging & live tail inspection
 │   ├── inotify.py                 # POSIX libc inotify ctypes wrapper & struct unpacking
 │   ├── migrator.py                # Batch storage migration engine across disks
 │   ├── organizer.py               # Batch reorganization into intelligent subcategories
@@ -137,6 +139,7 @@ smart-downloads-daemon/
 └── tests/
     ├── test_cli.py                # CLI commands, status, pause & lock tests
     ├── test_config.py             # Config loading, pause control & disk helpers
+    ├── test_history.py            # Persistent history recording, filtering & CLI tests
     ├── test_inotify.py            # Struct size & initialization tests
     ├── test_migrator.py           # Migration planning & collision tests
     ├── test_organizer.py          # Batch reorganize plan & collision tests
@@ -184,6 +187,22 @@ smartdown status
 # Export live status and metrics as JSON:
 smartdown status --json
 
+# View recent file organization and migration history:
+smartdown logs
+
+# View last 50 log entries:
+smartdown logs -n 50
+
+# Follow live activity logs in real-time (like tail -f):
+smartdown logs -f
+
+# Filter history logs by category or action:
+smartdown logs --category PDF
+smartdown logs --action organize
+
+# Export full activity history in JSON format:
+smartdown logs --all --json
+
 # Temporarily pause automated file sorting (holds all downloads in ~/Downloads):
 smartdown pause
 
@@ -222,6 +241,30 @@ smartdown --scan-once
 
 # Override grace period cooldown for a session (e.g. 120 seconds):
 smartdown --grace-period 120
+```
+
+---
+
+## Activity History & Migration Logs
+
+Every file movement, batch reorganization, and cross-disk migration is automatically recorded in a high-performance, append-only JSON Lines ledger (`~/.config/smart-downloads-daemon/history.jsonl`):
+
+```bash
+# View recent activity history (newest operations first):
+smartdown logs
+
+# Stream file movements live as cooldowns expire (like tail -f):
+smartdown logs -f
+
+# Filter operations by category or action:
+smartdown logs --category PDF
+smartdown logs --action migrate
+
+# Export structured history for scripts or pipelines:
+smartdown logs --json
+
+# Clear history logs:
+smartdown logs --clear
 ```
 
 ---

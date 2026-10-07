@@ -136,9 +136,34 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
             counter += 1
 
     try:
+        file_size = source_path.stat().st_size
+    except Exception:
+        file_size = None
+
+    try:
         shutil.move(str(source_path), str(dest_file))
         print(f"[OK] {filename} -> {dest_file}")
         sys.stdout.flush()
+
+        try:
+            from smart_downloads_daemon.history import record_event
+            rel = dest_folder.relative_to(config.destination_dir)
+            parts = rel.parts
+            cat = parts[0] if parts else "Outros"
+            subcat = parts[1] if len(parts) > 1 else None
+            record_event(
+                config=config,
+                action="move",
+                source=filename,
+                destination=dest_file,
+                category=cat,
+                subcategory=subcat,
+                size_bytes=file_size,
+                collision=(dest_file.name != filename),
+            )
+        except Exception:
+            pass
+
         return dest_file
     except Exception as e:
         print(f"[ERROR] Failed to move {filename}: {e}", file=sys.stderr)

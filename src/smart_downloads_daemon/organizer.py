@@ -143,6 +143,21 @@ class Organizer:
                 shutil.move(str(item.source_path), str(target_file))
                 result.files_moved += 1
                 result.bytes_moved += item.size_bytes
+
+                try:
+                    from smart_downloads_daemon.history import record_event
+                    record_event(
+                        config=self.config,
+                        action="organize",
+                        source=item.source_path.name,
+                        destination=target_file,
+                        category=item.category,
+                        subcategory=item.target_dir.name,
+                        size_bytes=item.size_bytes,
+                        collision=(target_file.name != item.source_path.name),
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 result.errors.append(f"Failed to move {item.source_path} -> {target_file}: {e}")
 

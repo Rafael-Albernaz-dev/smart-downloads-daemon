@@ -263,6 +263,10 @@ class DaemonConfig:
     def lock_file(self) -> Path:
         return self.config_dir / "daemon.lock"
 
+    @property
+    def history_file(self) -> Path:
+        return self.config_dir / "history.jsonl"
+
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "DaemonConfig":
         path = config_path or DEFAULT_CONFIG_PATH
