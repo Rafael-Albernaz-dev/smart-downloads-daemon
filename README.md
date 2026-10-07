@@ -44,35 +44,35 @@ Most automated download organizers suffer from critical usability and architectu
 
 ```mermaid
 flowchart TD
-    Kernel[Linux Kernel inotify\nIN_CLOSE_WRITE | IN_MOVED_TO] -->|Event Trigger| Poller[select.poll Event Multiplexer]
+    Kernel["Linux Kernel inotify (IN_CLOSE_WRITE / IN_MOVED_TO)"] -->|Event Trigger| Poller["select.poll Event Multiplexer"]
 
-    subgraph DaemonLoop [smart-downloads-daemon Event Loop]
-        Poller -->|Raw struct inotify_event| Parser[Binary Struct Parser\nstruct.unpack_from]
-        Parser --> PauseCheck{Is Daemon\nPaused?}
-        PauseCheck -->|Yes: Paused| HoldQueue[Hold in Queue\nDo not move]
-        PauseCheck -->|No| Guard{Guard Rails\nCheck In-Flight / Hidden?}
-        Guard -->|Ignored: .crdownload / .tmp / .part| Drop[Ignore Event]
-        Guard -->|Valid File| Scheduler[Grace-Period Scheduler\nDefault: 300s cooldown]
+    subgraph DaemonLoop["smartdown Event Loop"]
+        Poller -->|Raw struct inotify_event| Parser["Binary Struct Parser (struct.unpack_from)"]
+        Parser --> PauseCheck{"Is Daemon Paused?"}
+        PauseCheck -->|Yes: Paused| HoldQueue["Hold in Queue (Do not move)"]
+        PauseCheck -->|No| Guard{"Guard Rails (Check In-Flight or Hidden?)"}
+        Guard -->|Ignored: .crdownload / .tmp / .part| Drop["Ignore Event"]
+        Guard -->|Valid File| Scheduler["Grace-Period Scheduler (Default: 300s cooldown)"]
 
-        Scheduler --> DynamicWait[Dynamic Poll Timeout\nSleep until next file expires or 5s]
-        DynamicWait --> Expired{Cooldown\nExpired?}
+        Scheduler --> DynamicWait["Dynamic Poll Timeout (Sleep until next file expires or 5s)"]
+        DynamicWait --> Expired{"Cooldown Expired?"}
         Expired -->|No| DynamicWait
-        Expired -->|Yes| MountCheck{Destination\nMounted?}
-        MountCheck -->|No| AutoMount{Try Auto-Mount\nudisksctl}
-        AutoMount -->|Success| Classifier[Categorization Engine]
+        Expired -->|Yes| MountCheck{"Destination Mounted?"}
+        MountCheck -->|No| AutoMount{"Try Auto-Mount (udisksctl)"}
+        AutoMount -->|Success| Classifier["Categorization Engine"]
         AutoMount -->|Failed| HoldQueue
         MountCheck -->|Yes| Classifier
-        Classifier --> SubcatCheck{Match Subcategory?\nFilename / PDF Content}
-        SubcatCheck -->|Match| SubcatFolder[Target Subcategory Folder]
-        SubcatCheck -->|Fallback| RootFolder[Target Root Category Folder]
+        Classifier --> SubcatCheck{"Match Subcategory? (Filename or PDF Content)"}
+        SubcatCheck -->|Match| SubcatFolder["Target Subcategory Folder"]
+        SubcatCheck -->|Fallback| RootFolder["Target Root Category Folder"]
     end
 
-    SubcatFolder --> Collision{File exists in\nDestination?}
+    SubcatFolder --> Collision{"File exists in Destination?"}
     RootFolder --> Collision
-    Collision -->|Yes| Rename[Append Timestamp\n_YYYYMMDD_HHMMSS]
-    Collision -->|No| Move[shutil.move to Destination]
+    Collision -->|Yes| Rename["Append Timestamp (_YYYYMMDD_HHMMSS)"]
+    Collision -->|No| Move["shutil.move to Destination"]
     Rename --> Move
-    Move --> Dest[Destination Directory]
+    Move --> Dest["Destination Directory"]
 ```
 
 ---
