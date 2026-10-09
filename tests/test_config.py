@@ -83,3 +83,25 @@ def test_find_block_device_for_path():
         assert dev == Path("/dev/disk/by-uuid/1234-ABCD")
 
 
+def test_notifications_enabled_config(tmp_path: Path):
+    target_config = tmp_path / "config.json"
+    cfg = DaemonConfig(notifications_enabled=False)
+    assert cfg.notifications_enabled is False
+
+    cfg.save(target_config)
+    loaded = DaemonConfig.load(target_config)
+    assert loaded.notifications_enabled is False
+
+    loaded.notifications_enabled = True
+    loaded.save(target_config)
+    reloaded = DaemonConfig.load(target_config)
+    assert reloaded.notifications_enabled is True
+
+
+def test_pastas_category_present():
+    cfg = DaemonConfig()
+    assert "Pastas" in cfg.categories
+    assert "Pastas" in DEFAULT_CATEGORIES
+
+
+

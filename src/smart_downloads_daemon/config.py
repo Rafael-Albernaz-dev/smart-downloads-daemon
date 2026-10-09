@@ -20,6 +20,7 @@ DEFAULT_CATEGORIES: Dict[str, List[str]] = {
     "Videos": ["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"],
     "Audios": ["mp3", "wav", "ogg", "flac", "m4a", "aac", "wma"],
     "Compactados": ["zip", "tar", "gz", "bz2", "7z", "rar", "xz", "iso"],
+    "Pastas": [],
 }
 
 DEFAULT_IGNORE_EXTENSIONS: Set[str] = {
@@ -249,6 +250,7 @@ class DaemonConfig:
         }
     )
     ignore_extensions: Set[str] = field(default_factory=lambda: set(DEFAULT_IGNORE_EXTENSIONS))
+    notifications_enabled: bool = True
     config_dir: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR)
 
     @property
@@ -289,6 +291,8 @@ class DaemonConfig:
                     cfg.subcategories = data["subcategories"]
                 if "ignore_extensions" in data and isinstance(data["ignore_extensions"], list):
                     cfg.ignore_extensions = set(data["ignore_extensions"])
+                if "notifications_enabled" in data:
+                    cfg.notifications_enabled = bool(data["notifications_enabled"])
             except Exception as e:
                 print(f"[WARNING] Could not parse config from {path}: {e}")
         return cfg
@@ -304,6 +308,7 @@ class DaemonConfig:
             "categories": self.categories,
             "subcategories": self.subcategories,
             "ignore_extensions": sorted(list(self.ignore_extensions)),
+            "notifications_enabled": self.notifications_enabled,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)

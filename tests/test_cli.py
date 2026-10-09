@@ -99,3 +99,78 @@ def test_smartdown_cli_help():
     assert "pause" in result.stdout
     assert "resume" in result.stdout
 
+
+def test_show_status_with_directory(tmp_path: Path):
+    import io
+    dl = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    dl.mkdir()
+    docs.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=dl, destination_dir=docs, config_dir=tmp_path)
+    (dl / "fotos_viagem").mkdir()
+
+    captured_out = io.StringIO()
+    with patch("sys.stdout", captured_out), patch(
+        "smart_downloads_daemon.cli.get_service_info",
+        return_value={"active": False, "pid": None, "uptime_seconds": None, "status_str": "inactive"},
+    ):
+        show_status(cfg, as_json=True)
+
+    output = captured_out.getvalue()
+    data = json.loads(output)
+    pending_names = [f["name"] for f in data["queue"]["pending_files"]]
+    assert any("fotos_viagem" in name for name in pending_names)
+
+
+def test_cli_config_set_notifications(tmp_path: Path):
+    import subprocess
+    cfg_file = tmp_path / "config.json"
+    cfg = DaemonConfig(config_dir=tmp_path)
+    cfg.save(cfg_file)
+
+    # Disable notifications via CLI
+    res = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "smart_downloads_daemon.cli",
+            "--config",
+            str(cfg_file),
+            "config",
+            "--set-notifications",
+            "off",
+            "--no-restart",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+    assert "Disabled" in res.stdout
+
+    loaded = DaemonConfig.load(cfg_file)
+    assert loaded.notifications_enabled is False
+
+    # Enable notifications via CLI
+    res2 = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "smart_downloads_daemon.cli",
+            "--config",
+            str(cfg_file),
+            "config",
+            "--set-notifications",
+            "on",
+            "--no-restart",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert res2.returncode == 0
+    assert "Enabled" in res2.stdout
+
+    reloaded = DaemonConfig.load(cfg_file)
+    assert reloaded.notifications_enabled is True
+
+

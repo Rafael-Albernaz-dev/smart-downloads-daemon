@@ -71,15 +71,41 @@ def resolve_subcategory(
     return None
 
 
-def is_valid_file(filename: str, config: DaemonConfig) -> bool:
-    """Check if a filename should be processed or skipped."""
-    if not filename or filename.startswith(".") or filename.endswith("~") or filename.endswith("#"):
+def is_folder_in_flight(folder_path: Path, config: DaemonConfig) -> bool:
+    """Check if a directory contains active or incomplete downloads."""
+    try:
+        for item in folder_path.rglob("*"):
+            name_lower = item.name.lower()
+            for bad_ext in config.ignore_extensions:
+                if name_lower.endswith(bad_ext.lower()):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def is_valid_item(name: str, config: DaemonConfig, base_dir: Optional[Path] = None) -> bool:
+    """Check if a file or directory should be processed or skipped."""
+    if not name or name.startswith(".") or name.endswith("~") or name.endswith("#"):
         return False
-    fn_lower = filename.lower()
+
+    if base_dir is not None:
+        target_path = base_dir / name
+        if target_path.is_dir():
+            if is_folder_in_flight(target_path, config):
+                return False
+            return True
+
+    fn_lower = name.lower()
     for bad_ext in config.ignore_extensions:
         if fn_lower.endswith(bad_ext.lower()):
             return False
     return True
+
+
+def is_valid_file(filename: str, config: DaemonConfig) -> bool:
+    """Check if a filename should be processed or skipped (backward compatible)."""
+    return is_valid_item(filename, config)
 
 
 def get_destination_folder(
@@ -87,7 +113,25 @@ def get_destination_folder(
     config: DaemonConfig,
     source_path: Optional[Path] = None,
 ) -> Path:
-    """Determine destination category and subcategory folder."""
+    """Determine destination category and subcategory folder for a file or directory."""
+    is_dir = False
+    if source_path is not None:
+        is_dir = source_path.is_dir()
+    elif (config.downloads_dir / filename).is_dir():
+        is_dir = True
+
+    if is_dir:
+        # 1. Check if directory name matches any configured subcategory rules
+        for cat in sorted(config.subcategories.keys()):
+            subcat = resolve_subcategory(cat, filename, config, source_path=source_path)
+            if subcat:
+                return config.destination_dir / cat / subcat
+
+        # 2. Check if "Pastas" is in configured categories or fallback to "Pastas"
+        if "Pastas" in config.categories:
+            return config.destination_dir / "Pastas"
+        return config.destination_dir / "Pastas"
+
     ext = Path(filename).suffix.strip().lower().lstrip(".")
     target_category: Optional[str] = None
 
@@ -108,9 +152,13 @@ def get_destination_folder(
 
 
 def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
-    """Move a file to its destination category/subcategory folder with collision resolution."""
+    """Move a file or folder to its destination category/subcategory folder with collision resolution."""
     source_path = config.downloads_dir / filename
-    if not source_path.is_file():
+    if not source_path.exists():
+        return None
+
+    is_dir = source_path.is_dir()
+    if is_dir and is_folder_in_flight(source_path, config):
         return None
 
     if not config.is_destination_available():
@@ -127,16 +175,26 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
     dest_file = dest_folder / filename
     if dest_file.exists():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        stem = source_path.stem.rstrip()
-        suffix = source_path.suffix.strip()
-        dest_file = dest_folder / f"{stem}_{timestamp}{suffix}"
-        counter = 1
-        while dest_file.exists():
-            dest_file = dest_folder / f"{stem}_{timestamp}_{counter}{suffix}"
-            counter += 1
+        if is_dir:
+            dest_file = dest_folder / f"{filename}_{timestamp}"
+            counter = 1
+            while dest_file.exists():
+                dest_file = dest_folder / f"{filename}_{timestamp}_{counter}"
+                counter += 1
+        else:
+            stem = source_path.stem.rstrip()
+            suffix = source_path.suffix.strip()
+            dest_file = dest_folder / f"{stem}_{timestamp}{suffix}"
+            counter = 1
+            while dest_file.exists():
+                dest_file = dest_folder / f"{stem}_{timestamp}_{counter}{suffix}"
+                counter += 1
 
     try:
-        file_size = source_path.stat().st_size
+        if is_dir:
+            file_size = sum(f.stat().st_size for f in source_path.rglob("*") if f.is_file())
+        else:
+            file_size = source_path.stat().st_size
     except Exception:
         file_size = None
 
@@ -149,7 +207,7 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
             from smart_downloads_daemon.history import record_event
             rel = dest_folder.relative_to(config.destination_dir)
             parts = rel.parts
-            cat = parts[0] if parts else "Outros"
+            cat = parts[0] if parts else ("Pastas" if is_dir else "Outros")
             subcat = parts[1] if len(parts) > 1 else None
             record_event(
                 config=config,
@@ -164,9 +222,21 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
         except Exception:
             pass
 
+        try:
+            from smart_downloads_daemon.notifier import notify_organized
+            notify_organized(
+                source_name=filename,
+                dest_path=dest_file,
+                is_dir=is_dir,
+                config=config,
+            )
+        except Exception:
+            pass
+
         return dest_file
     except Exception as e:
         print(f"[ERROR] Failed to move {filename}: {e}", file=sys.stderr)
         sys.stderr.flush()
         return None
+
 

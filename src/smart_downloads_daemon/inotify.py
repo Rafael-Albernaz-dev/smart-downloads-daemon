@@ -11,6 +11,10 @@ from typing import Iterator
 # Linux kernel inotify event flags
 IN_CLOSE_WRITE = 0x00000008  # File opened for writing was closed
 IN_MOVED_TO    = 0x00000080  # File moved/renamed into monitored directory
+IN_CREATE      = 0x00000100  # Subfile or directory created in monitored directory
+IN_ISDIR       = 0x40000000  # Event occurred against directory
+
+DEFAULT_MASK   = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE
 
 EVENT_FMT = "iIII"
 EVENT_SIZE = struct.calcsize(EVENT_FMT)
@@ -18,7 +22,7 @@ EVENT_SIZE = struct.calcsize(EVENT_FMT)
 class Inotify:
     """Low-level ctypes binding to Linux inotify syscalls."""
 
-    def __init__(self, watch_dir: Path, mask: int = IN_CLOSE_WRITE | IN_MOVED_TO):
+    def __init__(self, watch_dir: Path, mask: int = DEFAULT_MASK):
         self.watch_dir = watch_dir
         self.mask = mask
         self._libc = ctypes.CDLL(None)

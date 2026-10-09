@@ -151,3 +151,126 @@ def test_move_file_into_subcategory(tmp_path: Path):
     assert not source_file.exists()
 
 
+def test_directory_destination_and_move(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs)
+
+    # 1. Directory with generic name -> Docs/Pastas
+    project_dir = downloads / "meu_projeto"
+    project_dir.mkdir()
+    (project_dir / "arquivo.txt").write_text("conteudo")
+
+    dest_folder = get_destination_folder("meu_projeto", cfg, source_path=project_dir)
+    assert dest_folder == docs / "Pastas"
+
+    moved = move_file("meu_projeto", cfg)
+    assert moved is not None
+    assert moved.is_dir()
+    assert moved == docs / "Pastas" / "meu_projeto"
+    assert (moved / "arquivo.txt").read_text() == "conteudo"
+    assert not project_dir.exists()
+
+
+def test_directory_subcategory_matching(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs)
+
+    # Directory with subcategory keyword (e.g. 'contrato' matches PDF/Contratos)
+    contratos_dir = downloads / "contrato_empresa"
+    contratos_dir.mkdir()
+
+    dest_folder = get_destination_folder("contrato_empresa", cfg, source_path=contratos_dir)
+    assert dest_folder == docs / "PDF" / "Contratos"
+
+    moved = move_file("contrato_empresa", cfg)
+    assert moved is not None
+    assert moved == docs / "PDF" / "Contratos" / "contrato_empresa"
+    assert not contratos_dir.exists()
+
+
+def test_directory_collision_resolution(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs)
+
+    # Pre-create directory in destination
+    pastas_dir = docs / "Pastas"
+    pastas_dir.mkdir()
+    existing_dir = pastas_dir / "viagem"
+    existing_dir.mkdir()
+    (existing_dir / "foto1.jpg").write_text("foto1")
+
+    # New directory with same name in Downloads
+    new_dir = downloads / "viagem"
+    new_dir.mkdir()
+    (new_dir / "foto2.jpg").write_text("foto2")
+
+    moved = move_file("viagem", cfg)
+    assert moved is not None
+    assert moved.is_dir()
+    assert moved.name != "viagem"
+    assert moved.name.startswith("viagem_")
+    assert (moved / "foto2.jpg").read_text() == "foto2"
+    assert (existing_dir / "foto1.jpg").read_text() == "foto1"
+
+
+def test_directory_in_flight_guard(tmp_path: Path):
+    from smart_downloads_daemon.sorter import is_folder_in_flight, is_valid_item
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    cfg = DaemonConfig(downloads_dir=downloads)
+
+    active_dir = downloads / "download_ativo"
+    active_dir.mkdir()
+    (active_dir / "parte1.crdownload").write_text("incompleto")
+
+    assert is_folder_in_flight(active_dir, cfg) is True
+    assert is_valid_item("download_ativo", cfg, base_dir=downloads) is False
+
+    # Should not move while in flight
+    assert move_file("download_ativo", cfg) is None
+    assert active_dir.exists()
+
+    # Once the in-flight file is gone or finished:
+    (active_dir / "parte1.crdownload").unlink()
+    (active_dir / "parte1.mp4").write_text("concluido")
+
+    assert is_folder_in_flight(active_dir, cfg) is False
+    assert is_valid_item("download_ativo", cfg, base_dir=downloads) is True
+
+
+def test_move_file_dispatches_notification(tmp_path: Path):
+    from unittest.mock import patch
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs)
+    test_file = downloads / "nota.txt"
+    test_file.write_text("texto")
+
+    with patch("smart_downloads_daemon.notifier.notify_organized") as mock_notify:
+        moved = move_file("nota.txt", cfg)
+        assert moved is not None
+        mock_notify.assert_called_once_with(
+            source_name="nota.txt",
+            dest_path=moved,
+            is_dir=False,
+            config=cfg,
+        )
+
+
+

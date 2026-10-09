@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from .config import DaemonConfig
 from .inotify import Inotify
-from .sorter import is_valid_file, move_file
+from .sorter import is_valid_file, is_valid_item, move_file
 
 
 class Watcher:
@@ -68,23 +68,24 @@ class Watcher:
             pass
 
     def schedule_file(self, filename: str, delay_seconds: Optional[float] = None) -> None:
-        """Add or update a file in the grace period queue."""
-        if not is_valid_file(filename, self.config):
+        """Add or update a file or directory in the grace period queue."""
+        if not is_valid_item(filename, self.config, base_dir=self.config.downloads_dir):
             return
 
         filepath = self.config.downloads_dir / filename
-        if not filepath.is_file():
+        if not (filepath.is_file() or filepath.is_dir()):
             return
 
         delay = self.config.grace_period_seconds if delay_seconds is None else max(0.0, delay_seconds)
         due_time = time.time() + delay
         self.pending_files[filename] = due_time
 
+        item_type = "directory" if filepath.is_dir() else "file"
         mins = round(delay / 60, 1)
         if delay > 0:
-            print(f"[SCHEDULED] '{filename}' available in Downloads. Will organize in {mins} min.")
+            print(f"[SCHEDULED] '{filename}' ({item_type}) available in Downloads. Will organize in {mins} min.")
         else:
-            print(f"[SCHEDULED] '{filename}' ready for immediate organization.")
+            print(f"[SCHEDULED] '{filename}' ({item_type}) ready for immediate organization.")
         sys.stdout.flush()
         self.save_state()
 
@@ -93,13 +94,21 @@ class Watcher:
         now = time.time()
         try:
             for item in self.config.downloads_dir.iterdir():
-                if item.is_file() and is_valid_file(item.name, self.config):
-                    mtime = item.stat().st_mtime
+                if (item.is_file() or item.is_dir()) and is_valid_item(item.name, self.config, base_dir=self.config.downloads_dir):
+                    if item.is_dir():
+                        try:
+                            all_mtimes = [item.stat().st_mtime] + [f.stat().st_mtime for f in item.rglob("*")]
+                            mtime = max(all_mtimes)
+                        except Exception:
+                            mtime = item.stat().st_mtime
+                    else:
+                        mtime = item.stat().st_mtime
+
                     age = now - mtime
                     if age >= self.config.grace_period_seconds:
                         if self.config.is_paused():
                             self.schedule_file(item.name, delay_seconds=0)
-                        elif move_file(item.name, self.config) is None and item.is_file():
+                        elif move_file(item.name, self.config) is None and (item.is_file() or item.is_dir()):
                             self.schedule_file(item.name, delay_seconds=30)
                     else:
                         remaining = self.config.grace_period_seconds - age
@@ -210,7 +219,7 @@ class Watcher:
 
                 for fname in expired:
                     moved = move_file(fname, self.config)
-                    if moved is None and (self.config.downloads_dir / fname).is_file():
+                    if moved is None and (self.config.downloads_dir / fname).exists():
                         self.pending_files[fname] = time.time() + 30
                     else:
                         self.pending_files.pop(fname, None)

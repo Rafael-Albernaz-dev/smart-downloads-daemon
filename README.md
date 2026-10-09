@@ -26,15 +26,17 @@ Most automated download organizers suffer from critical usability and architectu
 
 * **Direct `libc inotify` Syscalls via `ctypes`**: Communicates directly with the Linux kernel via `inotify_init1(0)` and `inotify_add_watch` with binary struct decoding (`struct inotify_event`). Zero third-party dependencies.
 * **0% Idle CPU (`select.poll`)**: The event loop sleeps in the kernel until an actual I/O event occurs or the next file cooldown expires. Zero busy-waiting.
-* **Smart Grace Period (5-Minute Cooldown)**: Files remain immediately available in `~/Downloads` for quick access. Only after 5 minutes of inactivity are they silently moved to their permanent home in `~/Documents`.
+* **Smart Grace Period (5-Minute Cooldown)**: Files and folders remain immediately available in `~/Downloads` for quick access. Only after 5 minutes of inactivity are they moved to their permanent home in `~/Documents`.
+* **Full Directory & Folder Organization**: Safely classifies and organizes downloaded folders (e.g. Google Drive download batches) into `Pastas` or matching subcategories, protected by recursive in-flight download guards.
+* **Visual Desktop Notifications**: Non-blocking desktop notifications on Linux via native `notify-send` with automatic `systemd --user` display discovery and toggleable configuration (`smartdown config --set-notifications on|off`).
 * **Smart Subcategories & Content Sniffing**: Files are classified into context-aware subfolders (e.g. `PDF/Ordem de Servico`, `PDF/Boletos`, `Planilhas/Cobranca e Negativacao`) via keyword matching and non-intrusive PDF content sniffing (via native `pdftotext`).
 * **Batch Directory Reorganization**: Reorganize existing flat category folders into the new subcategory structure safely with `smartdown organize` (`--dry-run` and `--apply`).
 * **Full Activity Logs & Migration History**: View persistent, complete history of all organized and migrated files with `smartdown logs`, supporting real-time streaming (`-f`), filtering, and JSON export.
 * **Pause & Resume Controls**: Easily suspend sorting (`smartdown pause`) when working with temporary downloads and resume (`smartdown resume`) when ready.
 * **Mount Guard & Auto-Recovery**: If a secondary/external drive is unmounted, holds downloads safely in `~/Downloads` without log spam, and auto-mounts on demand (`smartdown mount`).
-* **Live Status Dashboard**: View countdown timers for pending downloads, service uptime, paused state, and disk health with `smartdown status` (or `--json`).
-* **In-Flight Download Guards**: Automatically ignores incomplete browser downloads (`.crdownload`, `.part`, `.tmp`, `.download`) until writing has completely finished (`IN_CLOSE_WRITE` / `IN_MOVED_TO`).
-* **Timestamped Collision Protection**: If `report.pdf` already exists in `~/Documents/PDF/Relatorios`, the new file is automatically renamed to `report_YYYYMMDD_HHMMSS.pdf` without overwriting data.
+* **Live Status Dashboard**: View countdown timers for pending downloads and folders, service uptime, paused state, and disk health with `smartdown status` (or `--json`).
+* **In-Flight Download Guards**: Automatically ignores incomplete browser downloads (`.crdownload`, `.part`, `.tmp`, `.download`) both for top-level files and within directories until writing has completely finished.
+* **Timestamped Collision Protection**: If `report.pdf` or `folder_name` already exists in destination, it is automatically renamed to `name_YYYYMMDD_HHMMSS` without overwriting data.
 * **Single-Instance Protection**: Prevents duplicate concurrent daemon processes with automatic background service detection and POSIX lockfile guards.
 * **Native `systemd --user` Integration**: Runs seamlessly as a background user service on Linux login.
 
@@ -88,6 +90,7 @@ flowchart TD
 | **Videos** | `mp4`, `mkv`, `avi`, `mov`, `webm`, `flv`, `wmv`, `m4v` |
 | **Audios** | `mp3`, `wav`, `ogg`, `flac`, `m4a`, `aac`, `wma` |
 | **Compactados** | `zip`, `tar`, `gz`, `bz2`, `7z`, `rar`, `xz`, `iso` |
+| **Pastas** | Downloaded directories and multi-file folders |
 | **Outros** | Any uncategorized extension |
 
 ### Smart Subcategories Taxonomy
@@ -133,6 +136,7 @@ smart-downloads-daemon/
 │   ├── history.py                 # Persistent activity logging & live tail inspection
 │   ├── inotify.py                 # POSIX libc inotify ctypes wrapper & struct unpacking
 │   ├── migrator.py                # Batch storage migration engine across disks
+│   ├── notifier.py                # Desktop visual notifications via notify-send & display discovery
 │   ├── organizer.py               # Batch reorganization into intelligent subcategories
 │   ├── sorter.py                  # Subcategory resolution, guards & collision renaming
 │   └── watcher.py                 # select.poll dynamic event loop & grace scheduling
@@ -142,6 +146,7 @@ smart-downloads-daemon/
     ├── test_history.py            # Persistent history recording, filtering & CLI tests
     ├── test_inotify.py            # Struct size & initialization tests
     ├── test_migrator.py           # Migration planning & collision tests
+    ├── test_notifier.py           # Desktop notification dispatch, fallback & display tests
     ├── test_organizer.py          # Batch reorganize plan & collision tests
     ├── test_sorter.py             # Subcategory classification, content sniffing & tests
     └── test_watcher.py            # File scheduling, pause & retry expiration tests
@@ -226,6 +231,10 @@ smartdown config --show
 
 # Change destination directory on the fly (saves config and reloads daemon):
 smartdown config --set-destination /media/toru/96A10007A0FFEB9D
+
+# Enable or disable desktop visual notifications:
+smartdown config --set-notifications on
+smartdown config --set-notifications off
 
 # Preview batch migration of existing organized folders (dry-run):
 smartdown migrate --to /media/toru/96A10007A0FFEB9D

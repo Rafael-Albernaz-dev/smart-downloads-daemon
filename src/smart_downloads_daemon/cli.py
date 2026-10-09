@@ -19,7 +19,7 @@ from . import __version__
 from .config import DEFAULT_CONFIG_PATH, DaemonConfig
 from .migrator import Migrator, format_bytes
 from .organizer import Organizer
-from .sorter import get_destination_folder, is_valid_file
+from .sorter import get_destination_folder, is_valid_file, is_valid_item
 from .watcher import Watcher
 
 
@@ -141,14 +141,14 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
     if config.downloads_dir.is_dir():
         try:
             for item in sorted(config.downloads_dir.iterdir(), key=lambda p: p.name.lower()):
-                if not item.is_file():
+                if not (item.is_file() or item.is_dir()):
                     continue
 
-                if not is_valid_file(item.name, config):
+                if not is_valid_item(item.name, config, base_dir=config.downloads_dir):
                     ignored_items.append(item.name)
                     continue
 
-                target_folder = get_destination_folder(item.name, config).name
+                target_folder = get_destination_folder(item.name, config, source_path=item).name
 
                 # Look up countdown in state_data or estimate from mtime
                 state_pending = state_data.get("pending_files", {}).get(item.name)
@@ -156,7 +156,14 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
                     due = state_pending.get("due_time", now)
                     remaining = max(0.0, due - now)
                 else:
-                    mtime = item.stat().st_mtime
+                    if item.is_dir():
+                        try:
+                            all_mtimes = [item.stat().st_mtime] + [f.stat().st_mtime for f in item.rglob("*")]
+                            mtime = max(all_mtimes)
+                        except Exception:
+                            mtime = item.stat().st_mtime
+                    else:
+                        mtime = item.stat().st_mtime
                     age = now - mtime
                     remaining = max(0.0, config.grace_period_seconds - age)
 
@@ -170,8 +177,9 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
                 else:
                     status_lbl = f"Ready to move -> {target_folder}/"
 
+                display_name = f"{item.name}/" if item.is_dir() else item.name
                 pending_items.append({
-                    "name": item.name,
+                    "name": display_name,
                     "target_category": target_folder,
                     "remaining_seconds": round(remaining, 1),
                     "status_label": status_lbl,
@@ -504,6 +512,7 @@ def show_config(config: DaemonConfig, config_path: Optional[Path] = None) -> Non
     print(f"  • Grace Period: {config.grace_period_seconds}s ({mins} min)")
     print(f"  • Categories:   {', '.join(config.categories.keys())}, Outros")
     print(f"  • Ignored Exts: {', '.join(sorted(config.ignore_extensions))}")
+    print(f"  • Notification: {'Enabled' if config.notifications_enabled else 'Disabled'}")
     print("")
     print("Systemd Service:")
     svc_status = "active (running)" if service_active else "inactive / disabled"
@@ -741,6 +750,7 @@ def main() -> None:
     config_parser.add_argument("--set-destination", type=Path, help="Set and save new destination directory")
     config_parser.add_argument("--set-downloads", type=Path, help="Set and save new downloads directory")
     config_parser.add_argument("--set-grace-period", type=int, help="Set and save new grace period in seconds")
+    config_parser.add_argument("--set-notifications", choices=["on", "off"], help="Enable or disable desktop notifications (on/off)")
     config_parser.add_argument("--no-restart", action="store_true", help="Do not restart background service after changing config")
 
     # Subcommand: migrate
@@ -816,6 +826,12 @@ def main() -> None:
             config.grace_period_seconds = max(0, args.set_grace_period)
             modified = True
             print(f"✓ Updated grace_period_seconds to: {config.grace_period_seconds}")
+
+        if args.set_notifications is not None:
+            config.notifications_enabled = (args.set_notifications == "on")
+            modified = True
+            state_str = "Enabled" if config.notifications_enabled else "Disabled"
+            print(f"✓ Updated notifications to: {state_str}")
 
         if modified:
             saved_file = config.save(args.config)

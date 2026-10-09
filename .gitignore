@@ -64,3 +64,5 @@ uv.lock
 *.swo
 *~
 .DS_Store
+.coverage
+htmlcov/

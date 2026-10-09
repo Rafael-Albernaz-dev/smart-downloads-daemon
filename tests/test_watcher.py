@@ -133,3 +133,58 @@ def test_watcher_paused_does_not_move_files(tmp_path: Path):
     assert not source.exists()
     assert (docs / "PDF" / "hold.pdf").read_text() == "hold this"
 
+
+def test_watcher_schedules_directory(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, grace_period_seconds=10)
+    watcher = Watcher(cfg)
+
+    # Directory that exists should be scheduled
+    test_dir = downloads / "pacote_fotos"
+    test_dir.mkdir()
+
+    watcher.schedule_file("pacote_fotos", delay_seconds=5)
+    assert "pacote_fotos" in watcher.pending_files
+    assert watcher.pending_files["pacote_fotos"] > time.time()
+
+
+def test_watcher_directory_in_flight_not_scheduled(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, grace_period_seconds=10)
+    watcher = Watcher(cfg)
+
+    active_dir = downloads / "torrent_download"
+    active_dir.mkdir()
+    (active_dir / "filme.mp4.part").write_text("incompleto")
+
+    watcher.schedule_file("torrent_download", delay_seconds=5)
+    assert "torrent_download" not in watcher.pending_files
+
+
+def test_process_existing_directories(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+
+    # Pre-existing old directory (older than grace period)
+    old_dir = downloads / "pastinha_antiga"
+    old_dir.mkdir()
+    (old_dir / "info.txt").write_text("dados")
+    past_time = time.time() - 600
+    os.utime(old_dir, (past_time, past_time))
+    os.utime(old_dir / "info.txt", (past_time, past_time))
+
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs, grace_period_seconds=300)
+    watcher = Watcher(cfg)
+
+    watcher.process_existing_files()
+    # Should have been organized directly into Docs/Pastas
+    assert not old_dir.exists()
+    assert (docs / "Pastas" / "pastinha_antiga" / "info.txt").read_text() == "dados"
+
+
