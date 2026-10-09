@@ -19,7 +19,14 @@ from . import __version__
 from .config import DEFAULT_CONFIG_PATH, DaemonConfig
 from .migrator import Migrator, format_bytes
 from .organizer import Organizer
-from .sorter import get_destination_folder, is_valid_file, is_valid_item
+from .sorter import (
+    get_destination_folder,
+    has_sufficient_space,
+    is_dev_workspace,
+    is_folder_in_flight,
+    is_valid_file,
+    is_valid_item,
+)
 from .watcher import Watcher
 
 
@@ -145,10 +152,24 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
                     continue
 
                 if not is_valid_item(item.name, config, base_dir=config.downloads_dir):
-                    ignored_items.append(item.name)
+                    if item.is_dir() and is_dev_workspace(item):
+                        ignored_items.append(f"{item.name}/ (active dev workspace)")
+                    elif item.is_dir() and is_folder_in_flight(item, config):
+                        ignored_items.append(f"{item.name}/ (in-flight download)")
+                    else:
+                        ignored_items.append(item.name)
                     continue
 
-                target_folder = get_destination_folder(item.name, config, source_path=item).name
+                target_folder_path = get_destination_folder(item.name, config, source_path=item)
+                target_folder = target_folder_path.name
+
+                try:
+                    if item.is_dir():
+                        item_size = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
+                    else:
+                        item_size = item.stat().st_size
+                except Exception:
+                    item_size = 0
 
                 # Look up countdown in state_data or estimate from mtime
                 state_pending = state_data.get("pending_files", {}).get(item.name)
@@ -172,6 +193,8 @@ def show_status(config: DaemonConfig, as_json: bool = False) -> None:
                     status_lbl = "HELD (daemon is paused)"
                 elif not dest_available:
                     status_lbl = "HELD (destination drive unavailable)"
+                elif not has_sufficient_space(target_folder_path, item_size):
+                    status_lbl = "HELD (insufficient disk space on destination)"
                 elif remaining > 0:
                     status_lbl = f"{format_duration(remaining)} remaining -> {target_folder}/"
                 else:

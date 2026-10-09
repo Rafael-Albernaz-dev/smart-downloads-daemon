@@ -174,3 +174,29 @@ def test_cli_config_set_notifications(tmp_path: Path):
     assert reloaded.notifications_enabled is True
 
 
+def test_show_status_with_dev_workspace(tmp_path: Path):
+    import io
+    dl = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    dl.mkdir()
+    docs.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=dl, destination_dir=docs, config_dir=tmp_path)
+    git_dir = dl / "meu_repo"
+    git_dir.mkdir()
+    (git_dir / ".git").mkdir()
+
+    captured_out = io.StringIO()
+    with patch("sys.stdout", captured_out), patch(
+        "smart_downloads_daemon.cli.get_service_info",
+        return_value={"active": False, "pid": None, "uptime_seconds": None, "status_str": "inactive"},
+    ):
+        show_status(cfg, as_json=True)
+
+    output = captured_out.getvalue()
+    data = json.loads(output)
+    ignored = data["queue"]["ignored_files"]
+    assert any("meu_repo" in item and "active dev workspace" in item for item in ignored)
+
+
+

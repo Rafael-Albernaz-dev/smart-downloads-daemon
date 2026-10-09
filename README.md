@@ -35,6 +35,10 @@ Most automated download organizers suffer from critical usability and architectu
 * **Pause & Resume Controls**: Easily suspend sorting (`smartdown pause`) when working with temporary downloads and resume (`smartdown resume`) when ready.
 * **Mount Guard & Auto-Recovery**: If a secondary/external drive is unmounted, holds downloads safely in `~/Downloads` without log spam, and auto-mounts on demand (`smartdown mount`).
 * **Live Status Dashboard**: View countdown timers for pending downloads and folders, service uptime, paused state, and disk health with `smartdown status` (or `--json`).
+* **Disk Space Pre-Check Guard**: Validates free space on destination storage before starting file or directory transfers (requiring file size + 50 MB safety buffer), preventing out-of-space crashes.
+* **Atomic Failure Rollback**: If a cross-drive transfer is interrupted or fails midway, partial/corrupted destination files are immediately purged while preserving source downloads.
+* **Cross-Filesystem Name Sanitization**: Cleans and replaces reserved NTFS/FAT characters (`< > : " / \ | ? *`) on destination paths to prevent kernel I/O errors and guarantee dual-boot interoperability.
+* **Active Dev Workspace Protection**: Automatically detects and protects development workspaces (`.git`, `pyvenv.cfg`, `node_modules`) located in `~/Downloads`, avoiding inadvertent migrations.
 * **In-Flight Download Guards**: Automatically ignores incomplete browser downloads (`.crdownload`, `.part`, `.tmp`, `.download`) both for top-level files and within directories until writing has completely finished.
 * **Timestamped Collision Protection**: If `report.pdf` or `folder_name` already exists in destination, it is automatically renamed to `name_YYYYMMDD_HHMMSS` without overwriting data.
 * **Single-Instance Protection**: Prevents duplicate concurrent daemon processes with automatic background service detection and POSIX lockfile guards.

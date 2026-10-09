@@ -2,6 +2,7 @@
 File classification, guard-rail filtering, subcategory resolution, and collision-safe moving.
 """
 
+import re
 import shutil
 import subprocess
 import sys
@@ -71,6 +72,37 @@ def resolve_subcategory(
     return None
 
 
+ILLEGAL_NTFS_CHARS = re.compile(r'[<>:"/\\|?*]')
+DEV_WORKSPACE_MARKERS = {".git", "pyvenv.cfg", "node_modules"}
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize filename to avoid reserved NTFS/FAT characters and illegal trailing dots/spaces."""
+    if not name:
+        return name
+    name_clean = name.strip(" .")
+    sanitized = ILLEGAL_NTFS_CHARS.sub("_", name_clean)
+    p = Path(sanitized)
+    stem = p.stem.rstrip(" .")
+    if not stem:
+        stem = "unnamed"
+    suffix = p.suffix.rstrip(" .")
+    if suffix:
+        return f"{stem}{suffix}"
+    return stem
+
+
+def is_dev_workspace(folder_path: Path) -> bool:
+    """Check if a directory represents an active dev repository, virtualenv, or package root."""
+    try:
+        for marker in DEV_WORKSPACE_MARKERS:
+            if (folder_path / marker).exists():
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def is_folder_in_flight(folder_path: Path, config: DaemonConfig) -> bool:
     """Check if a directory contains active or incomplete downloads."""
     try:
@@ -93,6 +125,8 @@ def is_valid_item(name: str, config: DaemonConfig, base_dir: Optional[Path] = No
         target_path = base_dir / name
         if target_path.is_dir():
             if is_folder_in_flight(target_path, config):
+                return False
+            if is_dev_workspace(target_path):
                 return False
             return True
 
@@ -151,6 +185,30 @@ def get_destination_folder(
     return config.destination_dir / target_category
 
 
+SAFETY_MARGIN_BYTES = 50 * 1024 * 1024  # 50 MB safety buffer
+
+
+def get_free_space(path: Path) -> Optional[int]:
+    """Return available free bytes for path or its nearest existing parent."""
+    try:
+        curr = path.expanduser().resolve()
+        while not curr.exists() and curr != curr.parent:
+            curr = curr.parent
+        if not curr.exists():
+            return None
+        return shutil.disk_usage(curr).free
+    except Exception:
+        return None
+
+
+def has_sufficient_space(dest_dir: Path, required_bytes: int, safety_margin: int = SAFETY_MARGIN_BYTES) -> bool:
+    """Verify if destination storage has enough free space plus safety margin."""
+    free_bytes = get_free_space(dest_dir)
+    if free_bytes is None:
+        return True
+    return free_bytes >= (required_bytes + safety_margin)
+
+
 def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
     """Move a file or folder to its destination category/subcategory folder with collision resolution."""
     source_path = config.downloads_dir / filename
@@ -158,7 +216,7 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
         return None
 
     is_dir = source_path.is_dir()
-    if is_dir and is_folder_in_flight(source_path, config):
+    if is_dir and (is_folder_in_flight(source_path, config) or is_dev_workspace(source_path)):
         return None
 
     if not config.is_destination_available():
@@ -169,27 +227,6 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
         sys.stderr.flush()
         return None
 
-    dest_folder = get_destination_folder(filename, config, source_path=source_path)
-    dest_folder.mkdir(parents=True, exist_ok=True)
-
-    dest_file = dest_folder / filename
-    if dest_file.exists():
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if is_dir:
-            dest_file = dest_folder / f"{filename}_{timestamp}"
-            counter = 1
-            while dest_file.exists():
-                dest_file = dest_folder / f"{filename}_{timestamp}_{counter}"
-                counter += 1
-        else:
-            stem = source_path.stem.rstrip()
-            suffix = source_path.suffix.strip()
-            dest_file = dest_folder / f"{stem}_{timestamp}{suffix}"
-            counter = 1
-            while dest_file.exists():
-                dest_file = dest_folder / f"{stem}_{timestamp}_{counter}{suffix}"
-                counter += 1
-
     try:
         if is_dir:
             file_size = sum(f.stat().st_size for f in source_path.rglob("*") if f.is_file())
@@ -197,6 +234,43 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
             file_size = source_path.stat().st_size
     except Exception:
         file_size = None
+
+    dest_folder = get_destination_folder(filename, config, source_path=source_path)
+
+    # 1. Disk Space Pre-Check Guard
+    if file_size is not None and not has_sufficient_space(dest_folder, file_size):
+        free_bytes = get_free_space(dest_folder)
+        free_mb = round(free_bytes / (1024 * 1024), 1) if free_bytes is not None else 0.0
+        req_mb = round(file_size / (1024 * 1024), 1)
+        print(
+            f"[WARNING] Insufficient disk space on destination '{dest_folder}'. "
+            f"Required: {req_mb} MB (+50 MB buffer), Available: {free_mb} MB. Retaining '{filename}' in Downloads.",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
+        return None
+
+    dest_folder.mkdir(parents=True, exist_ok=True)
+
+    safe_name = sanitize_filename(filename)
+    dest_file = dest_folder / safe_name
+    if dest_file.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if is_dir:
+            dest_file = dest_folder / f"{safe_name}_{timestamp}"
+            counter = 1
+            while dest_file.exists():
+                dest_file = dest_folder / f"{safe_name}_{timestamp}_{counter}"
+                counter += 1
+        else:
+            p_safe = Path(safe_name)
+            stem = p_safe.stem.rstrip()
+            suffix = p_safe.suffix.strip()
+            dest_file = dest_folder / f"{stem}_{timestamp}{suffix}"
+            counter = 1
+            while dest_file.exists():
+                dest_file = dest_folder / f"{stem}_{timestamp}_{counter}{suffix}"
+                counter += 1
 
     try:
         shutil.move(str(source_path), str(dest_file))
@@ -217,7 +291,7 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
                 category=cat,
                 subcategory=subcat,
                 size_bytes=file_size,
-                collision=(dest_file.name != filename),
+                collision=(dest_file.name != safe_name),
             )
         except Exception:
             pass
@@ -237,6 +311,22 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
     except Exception as e:
         print(f"[ERROR] Failed to move {filename}: {e}", file=sys.stderr)
         sys.stderr.flush()
+
+        # Atomic failure rollback: remove partial destination if source is still intact
+        try:
+            if dest_file.exists() and source_path.exists():
+                if dest_file.is_file():
+                    dest_file.unlink()
+                elif dest_file.is_dir():
+                    shutil.rmtree(str(dest_file), ignore_errors=True)
+                print(
+                    f"[CLEANUP] Purged incomplete destination {dest_file} after transfer failure.",
+                    file=sys.stderr,
+                )
+                sys.stderr.flush()
+        except Exception:
+            pass
+
         return None
 
 
