@@ -6,40 +6,61 @@ using notify-send with resilient environment discovery and fallback handling.
 """
 
 import os
+import queue
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional
 
 from .config import DaemonConfig
 
+_notification_queue = queue.Queue(maxsize=128)
+_worker_lock = threading.Lock()
+_worker = None
+
+
+def _notification_worker() -> None:
+    while True:
+        args = _notification_queue.get()
+        try:
+            send_notification(*args)
+        finally:
+            _notification_queue.task_done()
+
+
+def dispatch_notification(title: str, message: str, icon: str, urgency: str,
+                          config: Optional[DaemonConfig]) -> bool:
+    """Queue a best-effort notification without waiting for the desktop bus."""
+    global _worker
+    if config is not None and not config.notifications_enabled:
+        return False
+    with _worker_lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_notification_worker, daemon=True, name="smartdown-notify")
+            _worker.start()
+    try:
+        _notification_queue.put_nowait((title, message, icon, urgency, config))
+        return True
+    except queue.Full:
+        return False
+
 
 def _detect_display_env() -> dict:
-    """Prepare environment variables for notify-send with display discovery."""
+    """Use the actual session environment and the current user's D-Bus bus."""
     env = os.environ.copy()
+    uid = os.getuid()
+    run_user = Path(f"/run/user/{uid}")
+
+    if "XDG_RUNTIME_DIR" not in env:
+        if run_user.is_dir():
+            env["XDG_RUNTIME_DIR"] = str(run_user)
 
     # If DBUS_SESSION_BUS_ADDRESS is missing, check default user bus
     if "DBUS_SESSION_BUS_ADDRESS" not in env:
-        uid = os.getuid()
-        user_bus = Path(f"/run/user/{uid}/bus")
+        user_bus = run_user / "bus"
         if user_bus.exists():
             env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={user_bus}"
-
-    # If neither DISPLAY nor WAYLAND_DISPLAY is set (common in systemd --user units),
-    # detect active X11 display socket in /tmp/.X11-unix/
-    if "DISPLAY" not in env and "WAYLAND_DISPLAY" not in env:
-        x11_dir = Path("/tmp/.X11-unix")
-        if x11_dir.is_dir():
-            try:
-                sockets = sorted(x11_dir.glob("X*"))
-                if sockets:
-                    # e.g. /tmp/.X11-unix/X0 -> :0, /tmp/.X11-unix/X1 -> :1
-                    display_num = sockets[0].name.replace("X", ":")
-                    env["DISPLAY"] = display_num
-            except Exception:
-                pass
-        if "DISPLAY" not in env:
-            env["DISPLAY"] = ":0"
 
     return env
 
@@ -112,10 +133,34 @@ def notify_organized(
     message = f"{item_type} organizado:\n{source_name} ➔ {dest_display}"
     icon = "folder" if is_dir else "document-save"
 
-    return send_notification(
+    return dispatch_notification(
         title=title,
         message=message,
         icon=icon,
         urgency="normal",
+        config=config,
+    )
+
+
+def notify_scheduled(
+    source_name: str,
+    delay_minutes: float,
+    is_dir: bool = False,
+    config: Optional[DaemonConfig] = None,
+) -> bool:
+    """
+    Notify the user that a downloaded file or directory is queued in Downloads.
+    """
+    item_type = "Pasta" if is_dir else "Arquivo"
+    title = "Smart Downloads"
+    mins = round(delay_minutes, 1)
+    message = f"{item_type} detectado:\n{source_name} (organização em {mins} min)"
+    icon = "folder" if is_dir else "document-save"
+
+    return dispatch_notification(
+        title=title,
+        message=message,
+        icon=icon,
+        urgency="low",
         config=config,
     )

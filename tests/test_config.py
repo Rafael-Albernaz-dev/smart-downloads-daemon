@@ -51,6 +51,14 @@ def test_path_availability(tmp_path: Path):
     assert is_path_available(fake_unmounted) is False
 
 
+def test_unmounted_media_directory_is_unavailable():
+    from unittest.mock import patch
+    from smart_downloads_daemon.config import is_path_available
+
+    with patch("smart_downloads_daemon.config.os.path.ismount", return_value=False):
+        assert is_path_available(Path("/media/test-user/external/Documents")) is False
+
+
 def test_pause_control(tmp_path: Path):
     cfg = DaemonConfig(config_dir=tmp_path)
     assert cfg.is_paused() is False

@@ -45,14 +45,19 @@ def format_duration(seconds: float) -> str:
 
 def acquire_instance_lock(lock_path: Path):
     """Attempt to acquire non-blocking exclusive flock on lockfile."""
+    f = None
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        f = open(lock_path, "w")
+        f = open(lock_path, "a+")
         fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        f.seek(0)
+        f.truncate()
         f.write(f"{os.getpid()}\n")
         f.flush()
         return f
     except (IOError, OSError, AttributeError):
+        if f is not None:
+            f.close()
         return None
 
 
@@ -953,12 +958,7 @@ def main() -> None:
     try:
         watcher.run(stop_event=stop_event)
     finally:
-        try:
-            lock_fp.close()
-            if config.lock_file.is_file():
-                config.lock_file.unlink()
-        except OSError:
-            pass
+        lock_fp.close()
 
 
 if __name__ == "__main__":

@@ -8,18 +8,51 @@ recording all file moves, batch reorganizations, and storage migrations.
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import re
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
+from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from smart_downloads_daemon.config import DaemonConfig
 
 MAX_HISTORY_ENTRIES = 50000
+MAX_HISTORY_BYTES = 10 * 1024 * 1024
+PRUNED_HISTORY_BYTES = 8 * 1024 * 1024
+
+
+@contextmanager
+def _history_lock(history_file: Path):
+    lock_path = history_file.with_name(history_file.name + ".lock")
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def _reverse_lines(path: Path):
+    with open(path, "rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        position = stream.tell()
+        pending = b""
+        while position:
+            size = min(64 * 1024, position)
+            position -= size
+            stream.seek(position)
+            pending = stream.read(size) + pending
+            parts = pending.split(b"\n")
+            pending = parts.pop(0)
+            for line in reversed(parts):
+                if line:
+                    yield line.decode("utf-8", errors="replace")
+        if pending:
+            yield pending.decode("utf-8", errors="replace")
 
 
 def record_event(
@@ -51,6 +84,7 @@ def record_event(
             pass
 
     entry: Dict[str, Any] = {
+        "id": uuid.uuid4().hex,
         "timestamp": ts,
         "action": action.lower(),
         "source": source_str,
@@ -63,12 +97,44 @@ def record_event(
 
     try:
         config.history_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(config.history_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with _history_lock(config.history_file):
+            with open(config.history_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            _prune_history_unlocked(config.history_file)
     except Exception as e:
         print(f"[WARNING] Could not write history event: {e}", file=sys.stderr)
 
     return entry
+
+
+def prune_history_if_needed(history_file: Path, max_entries: int = MAX_HISTORY_ENTRIES, force: bool = False) -> None:
+    """Trim oldest lines if history exceeds max_entries or 10MB to prevent disk bloat."""
+    if not history_file.is_file():
+        return
+    try:
+        with _history_lock(history_file):
+            _prune_history_unlocked(history_file, max_entries=max_entries, force=force)
+    except Exception:
+        pass
+
+
+def _prune_history_unlocked(history_file: Path, max_entries: int = MAX_HISTORY_ENTRIES,
+                            force: bool = False) -> None:
+    if not force and history_file.stat().st_size < MAX_HISTORY_BYTES:
+        return
+    with open(history_file, "rb") as stream:
+        lines = deque(stream, maxlen=max_entries)
+    total = sum(map(len, lines))
+    while lines and total > PRUNED_HISTORY_BYTES:
+        total -= len(lines.popleft())
+    temp = history_file.with_name(history_file.name + ".tmp")
+    with open(temp, "wb") as stream:
+        stream.writelines(lines)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temp.replace(history_file)
 
 
 def backfill_history_if_needed(config: DaemonConfig) -> int:
@@ -145,9 +211,14 @@ def backfill_history_if_needed(config: DaemonConfig) -> int:
         if entries:
             entries.sort(key=lambda x: x["timestamp"])
             config.history_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(config.history_file, "w", encoding="utf-8") as f:
-                for entry in entries:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            with _history_lock(config.history_file):
+                if config.history_file.exists():
+                    return 0
+                with open(config.history_file, "w", encoding="utf-8") as f:
+                    for entry in entries:
+                        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
             return len(entries)
 
     except Exception:
@@ -174,8 +245,9 @@ def load_history(
     cat_norm = category.lower().strip() if category else None
 
     try:
-        with open(config.history_file, "r", encoding="utf-8") as f:
-            for line in f:
+        lines = _reverse_lines(config.history_file) if reverse else open(config.history_file, "r", encoding="utf-8")
+        try:
+            for line in lines:
                 line = line.strip()
                 if not line:
                     continue
@@ -190,15 +262,14 @@ def load_history(
                     continue
 
                 entries.append(data)
+                if limit is not None and limit > 0 and len(entries) >= limit:
+                    break
+        finally:
+            if not reverse:
+                lines.close()
     except Exception as e:
         print(f"[WARNING] Could not read history: {e}", file=sys.stderr)
         return []
-
-    if reverse:
-        entries.reverse()
-
-    if limit is not None and limit > 0:
-        return entries[:limit]
 
     return entries
 
@@ -206,8 +277,10 @@ def load_history(
 def clear_history(config: DaemonConfig) -> bool:
     """Clear all historical activity entries."""
     try:
-        if config.history_file.is_file():
-            config.history_file.write_text("", encoding="utf-8")
+        config.history_file.parent.mkdir(parents=True, exist_ok=True)
+        with _history_lock(config.history_file):
+            if config.history_file.is_file():
+                config.history_file.write_text("", encoding="utf-8")
         return True
     except Exception as e:
         print(f"[ERROR] Could not clear history file: {e}", file=sys.stderr)
@@ -257,7 +330,8 @@ def follow_history(
     print("Following live smartdown activity logs (Ctrl+C to stop)...")
     print("-" * 78)
 
-    initial = load_history(config, limit=limit, action=action, category=category, reverse=False)
+    initial = load_history(config, limit=limit, action=action, category=category, reverse=True)
+    initial.reverse()
     for itm in initial:
         print(format_log_entry(itm))
     sys.stdout.flush()
@@ -266,25 +340,60 @@ def follow_history(
         config.history_file.parent.mkdir(parents=True, exist_ok=True)
         config.history_file.touch()
 
+    latest = load_history(config, limit=1, reverse=True)
+    last_key = _history_entry_key(latest[0]) if latest else None
+    stream = open(config.history_file, "r", encoding="utf-8")
+    stream.seek(0, os.SEEK_END)
     try:
-        with open(config.history_file, "r", encoding="utf-8") as f:
-            f.seek(0, os.SEEK_END)
-            while True:
-                line = f.readline()
-                if line:
-                    line = line.strip()
-                    if line:
+        while True:
+            line = stream.readline()
+            if line:
+                try:
+                    data = json.loads(line)
+                    last_key = _history_entry_key(data)
+                    if action and data.get("action", "").lower() != action.lower():
+                        continue
+                    if category and data.get("category", "").lower() != category.lower():
+                        continue
+                    print(format_log_entry(data))
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                continue
+
+            try:
+                current = config.history_file.stat()
+                if current.st_ino != os.fstat(stream.fileno()).st_ino:
+                    unseen = []
+                    for raw in _reverse_lines(config.history_file):
                         try:
-                            data = json.loads(line)
-                            if action and data.get("action", "").lower() != action.lower():
-                                continue
-                            if category and data.get("category", "").lower() != category.lower():
-                                continue
-                            print(format_log_entry(data))
-                            sys.stdout.flush()
+                            data = json.loads(raw)
                         except Exception:
-                            pass
-                else:
-                    time.sleep(0.5)
+                            continue
+                        if _history_entry_key(data) == last_key:
+                            break
+                        unseen.append(data)
+                    for data in reversed(unseen):
+                        last_key = _history_entry_key(data)
+                        if action and data.get("action", "").lower() != action.lower():
+                            continue
+                        if category and data.get("category", "").lower() != category.lower():
+                            continue
+                        print(format_log_entry(data))
+                        sys.stdout.flush()
+                    stream.close()
+                    stream = open(config.history_file, "r", encoding="utf-8")
+                    stream.seek(0, os.SEEK_END)
+                elif stream.tell() > current.st_size:
+                    stream.seek(0)
+            except OSError:
+                pass
+            time.sleep(0.5)
     except KeyboardInterrupt:
         print("\n[LOGS] Stopped following.")
+    finally:
+        stream.close()
+
+
+def _history_entry_key(entry: Dict[str, Any]) -> str:
+    return entry.get("id") or json.dumps(entry, sort_keys=True, ensure_ascii=False)

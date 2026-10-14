@@ -184,3 +184,31 @@ def test_move_file_records_history(tmp_path: Path):
     assert hist[0]["action"] == "move"
     assert hist[0]["category"] == "PDF"
     assert hist[0]["subcategory"] == "Boletos"
+
+
+def test_prune_history_if_needed(tmp_path: Path):
+    from smart_downloads_daemon.history import prune_history_if_needed
+    history_file = tmp_path / "history.jsonl"
+    lines = [f'{{"idx": {i}}}\n' for i in range(10)]
+    history_file.write_text("".join(lines))
+
+    # Should prune to max 5 when force-called
+    prune_history_if_needed(history_file, max_entries=5, force=True)
+
+    remaining = [json.loads(line) for line in history_file.read_text().splitlines()]
+    assert len(remaining) == 5
+    assert remaining[0]["idx"] == 5
+    assert remaining[-1]["idx"] == 9
+
+
+def test_history_prune_enforces_byte_limit(tmp_path: Path):
+    from unittest.mock import patch
+    from smart_downloads_daemon.history import prune_history_if_needed
+
+    history_file = tmp_path / "history.jsonl"
+    history_file.write_bytes(b"a" * 20 + b"\n" + b"b" * 20 + b"\n" + b"c" * 20 + b"\n")
+    with patch("smart_downloads_daemon.history.MAX_HISTORY_BYTES", 50), patch(
+        "smart_downloads_daemon.history.PRUNED_HISTORY_BYTES", 25
+    ):
+        prune_history_if_needed(history_file)
+    assert history_file.read_bytes() == b"c" * 20 + b"\n"

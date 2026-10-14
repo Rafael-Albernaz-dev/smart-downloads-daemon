@@ -3,7 +3,6 @@ Batch migration tool for moving organized categories across storage devices.
 """
 
 import os
-import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,6 +10,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from .config import DaemonConfig, is_path_available
+from .sorter import has_sufficient_space, sanitize_filename
+from .transfer import verified_move
 
 def format_bytes(num_bytes: int) -> str:
     """Format bytes into human-readable representation."""
@@ -73,8 +74,10 @@ class Migrator:
         plan = MigrationPlan(from_dir=source_base, to_dir=target_base)
 
         for cat in cat_names:
+            if Path(cat).name != cat or cat in (".", ".."):
+                continue
             src_cat_dir = source_base / cat
-            if not src_cat_dir.is_dir():
+            if src_cat_dir.is_symlink() or not src_cat_dir.is_dir():
                 continue
 
             plan.categories_found.append(cat)
@@ -93,7 +96,8 @@ class Migrator:
                         file_size = 0
 
                     rel_path = file_path.relative_to(src_cat_dir)
-                    target_path = target_base / cat / rel_path
+                    safe_parts = [sanitize_filename(part) for part in rel_path.parts]
+                    target_path = target_base / sanitize_filename(cat) / Path(*safe_parts)
 
                     item = MigrationItem(
                         category=cat,
@@ -128,6 +132,20 @@ class Migrator:
             dry_run=dry_run,
         )
 
+        try:
+            plan.to_dir.relative_to(plan.from_dir)
+        except ValueError:
+            try:
+                plan.from_dir.relative_to(plan.to_dir)
+            except ValueError:
+                pass
+            else:
+                result.errors.append("Migration source and destination overlap.")
+                return result
+        else:
+            result.errors.append("Migration source and destination overlap.")
+            return result
+
         if not is_path_available(plan.to_dir):
             result.errors.append(f"Destination '{plan.to_dir}' is not mounted, accessible or writable.")
             return result
@@ -142,44 +160,41 @@ class Migrator:
             if progress_callback:
                 progress_callback(item, idx, total)
 
-            dest_folder = item.target_path.parent
-            dest_folder.mkdir(parents=True, exist_ok=True)
-
-            dest_file = item.target_path
-            if dest_file.exists():
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                stem = item.target_path.stem
-                suffix = item.target_path.suffix
-                dest_file = dest_folder / f"{stem}_{timestamp}{suffix}"
-                counter = 1
-                while dest_file.exists():
-                    dest_file = dest_folder / f"{stem}_{timestamp}_{counter}{suffix}"
-                    counter += 1
-                result.collisions_resolved += 1
-
             try:
-                # Copy with metadata, verify size, then remove source
-                shutil.copy2(item.source_path, dest_file)
-                if dest_file.exists() and dest_file.stat().st_size == item.size_bytes:
-                    item.source_path.unlink()
-                    result.files_moved += 1
-                    result.bytes_moved += item.size_bytes
-
-                    try:
-                        from smart_downloads_daemon.history import record_event
-                        record_event(
-                            config=self.config,
-                            action="migrate",
-                            source=item.source_path.name,
-                            destination=dest_file,
-                            category=item.category,
-                            size_bytes=item.size_bytes,
-                            collision=(dest_file.name != item.target_path.name),
-                        )
-                    except Exception:
-                        pass
-                else:
-                    result.errors.append(f"Verification failed after copy: {item.source_path} -> {dest_file}")
+                if not item.source_path.is_file() or item.source_path.is_symlink():
+                    raise OSError("Source is unavailable or is a symlink")
+                current_size = item.source_path.stat().st_size
+                dest_folder = item.target_path.parent
+                if not has_sufficient_space(dest_folder, current_size):
+                    raise OSError("Insufficient or unknown destination free space")
+                dest_folder.mkdir(parents=True, exist_ok=True)
+                dest_file = item.target_path
+                if dest_file.exists():
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    stem = item.target_path.stem
+                    suffix = item.target_path.suffix
+                    dest_file = dest_folder / f"{stem}_{timestamp}{suffix}"
+                    counter = 1
+                    while dest_file.exists():
+                        dest_file = dest_folder / f"{stem}_{timestamp}_{counter}{suffix}"
+                        counter += 1
+                    result.collisions_resolved += 1
+                verified_move(item.source_path, dest_file)
+                result.files_moved += 1
+                result.bytes_moved += current_size
+                try:
+                    from smart_downloads_daemon.history import record_event
+                    record_event(
+                        config=self.config,
+                        action="migrate",
+                        source=item.source_path.name,
+                        destination=dest_file,
+                        category=item.category,
+                        size_bytes=current_size,
+                        collision=(dest_file.name != item.target_path.name),
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 result.errors.append(f"Failed to move {item.source_path}: {e}")
 

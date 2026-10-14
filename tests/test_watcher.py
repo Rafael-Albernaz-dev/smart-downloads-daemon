@@ -162,7 +162,66 @@ def test_watcher_directory_in_flight_not_scheduled(tmp_path: Path):
     (active_dir / "filme.mp4.part").write_text("incompleto")
 
     watcher.schedule_file("torrent_download", delay_seconds=5)
-    assert "torrent_download" not in watcher.pending_files
+    # Retry even without another root-level event when the nested .part is removed.
+    assert "torrent_download" in watcher.pending_files
+
+
+def test_nested_download_retried_after_completion(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    folder = downloads / "bundle"
+    folder.mkdir()
+    part = folder / "video.part"
+    part.write_text("partial")
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=tmp_path / "Docs", config_dir=tmp_path)
+    watcher = Watcher(cfg)
+    watcher.schedule_file("bundle", notify=False)
+    assert "bundle" in watcher.pending_files
+    part.rename(folder / "video.mp4")
+
+    stop = threading.Event()
+    def one_iteration(_timeout):
+        watcher.pending_files["bundle"] = 0
+        stop.set()
+        return []
+
+    with patch("smart_downloads_daemon.watcher.select.poll") as poll:
+        poll.return_value.poll.side_effect = one_iteration
+        watcher.run(stop)
+    assert (cfg.destination_dir / "Pastas" / "bundle" / "video.mp4").read_text() == "partial"
+
+
+def test_poll_loop_remains_responsive_during_transfer(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "old.txt").write_text("data")
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=tmp_path / "Docs",
+                       config_dir=tmp_path, grace_period_seconds=0)
+    watcher = Watcher(cfg)
+    stop = threading.Event()
+    transfer_started = threading.Event()
+    release_transfer = threading.Event()
+    poll_calls = []
+
+    def slow_move(_name, _config):
+        transfer_started.set()
+        release_transfer.wait(2)
+        return None
+
+    def poll_once_more(_timeout):
+        poll_calls.append(1)
+        if len(poll_calls) == 2:
+            assert transfer_started.wait(1)
+            release_transfer.set()
+            stop.set()
+        return []
+
+    with patch("smart_downloads_daemon.watcher.move_file", side_effect=slow_move), patch(
+        "smart_downloads_daemon.watcher.select.poll"
+    ) as poll:
+        poll.return_value.poll.side_effect = poll_once_more
+        watcher.run(stop)
+    assert len(poll_calls) >= 2
 
 
 def test_process_existing_directories(tmp_path: Path):
@@ -186,5 +245,26 @@ def test_process_existing_directories(tmp_path: Path):
     # Should have been organized directly into Docs/Pastas
     assert not old_dir.exists()
     assert (docs / "Pastas" / "pastinha_antiga" / "info.txt").read_text() == "dados"
+
+
+def test_watcher_removes_deleted_file_from_queue(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+
+    cfg = DaemonConfig(downloads_dir=downloads, grace_period_seconds=300)
+    watcher = Watcher(cfg)
+
+    file_path = downloads / "temporario.pdf"
+    file_path.write_text("conteudo")
+
+    watcher.schedule_file("temporario.pdf", delay_seconds=100)
+    assert "temporario.pdf" in watcher.pending_files
+
+    # File is deleted from disk
+    file_path.unlink()
+
+    # When inotify triggers on delete/move_from, schedule_file cleans up the pending queue
+    watcher.schedule_file("temporario.pdf")
+    assert "temporario.pdf" not in watcher.pending_files
 
 

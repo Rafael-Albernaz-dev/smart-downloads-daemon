@@ -1,4 +1,6 @@
 from pathlib import Path
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 from smart_downloads_daemon.config import DaemonConfig
@@ -61,14 +63,15 @@ def test_send_notification_subprocess_exception_handled():
 def test_detect_display_env_fallback():
     with patch.dict("os.environ", {}, clear=True):
         env = _detect_display_env()
-        assert "DISPLAY" in env
-        assert env["DISPLAY"].startswith(":")
+        assert "DISPLAY" not in env
+        assert "WAYLAND_DISPLAY" not in env
+        assert env.get("XDG_RUNTIME_DIR", "").startswith("/run/user/")
 
 
 def test_notify_organized_for_file_and_directory(tmp_path: Path):
     cfg = DaemonConfig(destination_dir=tmp_path / "Docs")
 
-    with patch("smart_downloads_daemon.notifier.send_notification") as mock_send:
+    with patch("smart_downloads_daemon.notifier.dispatch_notification") as mock_send:
         mock_send.return_value = True
 
         # File notification
@@ -92,3 +95,49 @@ def test_notify_organized_for_file_and_directory(tmp_path: Path):
             urgency="normal",
             config=cfg,
         )
+
+
+def test_notify_scheduled(tmp_path: Path):
+    from smart_downloads_daemon.notifier import notify_scheduled
+    cfg = DaemonConfig()
+
+    with patch("smart_downloads_daemon.notifier.dispatch_notification") as mock_send:
+        mock_send.return_value = True
+
+        assert notify_scheduled("relatorio.pdf", delay_minutes=5.0, is_dir=False, config=cfg) is True
+        mock_send.assert_called_with(
+            title="Smart Downloads",
+            message="Arquivo detectado:\nrelatorio.pdf (organização em 5.0 min)",
+            icon="document-save",
+            urgency="low",
+            config=cfg,
+        )
+
+        assert notify_scheduled("meu_projeto", delay_minutes=5.0, is_dir=True, config=cfg) is True
+        mock_send.assert_called_with(
+            title="Smart Downloads",
+            message="Pasta detectado:\nmeu_projeto (organização em 5.0 min)",
+            icon="folder",
+            urgency="low",
+            config=cfg,
+        )
+
+
+def test_dispatch_does_not_wait_for_desktop_bus():
+    from smart_downloads_daemon import notifier
+
+    notifier._notification_queue.join()
+    entered = threading.Event()
+    release = threading.Event()
+    def slow_send(*_args):
+        entered.set()
+        release.wait(2)
+        return True
+
+    with patch("smart_downloads_daemon.notifier.send_notification", side_effect=slow_send):
+        started = time.monotonic()
+        assert notifier.dispatch_notification("title", "body", "folder", "normal", DaemonConfig())
+        assert time.monotonic() - started < 0.5
+        assert entered.wait(1)
+        release.set()
+        notifier._notification_queue.join()

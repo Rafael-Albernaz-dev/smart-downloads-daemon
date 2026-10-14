@@ -3,15 +3,15 @@ Reorganizer engine for classifying existing organized files into smart subcatego
 """
 
 import os
-import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .config import DaemonConfig
 from .migrator import format_bytes
-from .sorter import get_destination_folder, is_valid_file
+from .sorter import _destination_component, get_destination_folder, is_valid_file, sanitize_filename
+from .transfer import verified_move
 
 
 @dataclass
@@ -51,13 +51,18 @@ class Organizer:
         """Scan category roots and plan subcategory movements."""
         base_dir = (target_dir or self.config.destination_dir).expanduser().resolve()
         plan = OrganizePlan(target_dir=base_dir)
+        target_config = replace(self.config, destination_dir=base_dir)
 
         # Only inspect managed categories
         managed_categories = set(self.config.categories.keys())
 
         for cat in sorted(managed_categories):
+            try:
+                _destination_component(cat)
+            except ValueError:
+                continue
             cat_dir = base_dir / cat
-            if not cat_dir.is_dir():
+            if cat_dir.is_symlink() or not cat_dir.is_dir():
                 continue
 
             subcat_counts: Dict[str, int] = {}
@@ -73,7 +78,7 @@ class Organizer:
                         continue
 
                     # Determine target subcategory folder using source_path for content inspection
-                    target_folder = get_destination_folder(entry.name, self.config, source_path=entry)
+                    target_folder = get_destination_folder(entry.name, target_config, source_path=entry)
 
                     # If target is different from where file currently is:
                     if target_folder != cat_dir:
@@ -125,7 +130,7 @@ class Organizer:
                 continue
 
             item.target_dir.mkdir(parents=True, exist_ok=True)
-            target_file = item.target_dir / item.source_path.name
+            target_file = item.target_dir / sanitize_filename(item.source_path.name)
 
             # Collision resolution with timestamp
             if target_file.exists():
@@ -140,7 +145,7 @@ class Organizer:
                 result.collisions_resolved += 1
 
             try:
-                shutil.move(str(item.source_path), str(target_file))
+                verified_move(item.source_path, target_file)
                 result.files_moved += 1
                 result.bytes_moved += item.size_bytes
 

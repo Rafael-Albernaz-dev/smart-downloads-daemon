@@ -62,3 +62,19 @@ def test_organizer_execution_and_collision(tmp_path: Path):
     collision_files = list(target_dir.glob("fatura_luz_*.pdf"))
     assert len(collision_files) == 1
     assert collision_files[0].read_text() == "new boleto"
+
+
+def test_explicit_target_directory_stays_selected(tmp_path: Path):
+    configured = tmp_path / "Configured"
+    selected = tmp_path / "Selected"
+    pdf = selected / "PDF"
+    pdf.mkdir(parents=True)
+    (pdf / "boleto.pdf").write_text("data")
+    organizer = Organizer(DaemonConfig(destination_dir=configured))
+
+    plan = organizer.create_plan(selected)
+    assert plan.items[0].target_dir == selected / "PDF" / "Boletos"
+    result = organizer.execute_plan(plan, dry_run=False)
+    assert result.files_moved == 1
+    assert (selected / "PDF" / "Boletos" / "boleto.pdf").read_text() == "data"
+    assert not configured.exists()

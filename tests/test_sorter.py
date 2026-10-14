@@ -82,7 +82,10 @@ def test_move_file_repetitive_collision(tmp_path: Path):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     (planilhas_dest / f"data_{ts}.csv").write_text("first collision")
 
-    moved = move_file("data.csv", cfg)
+    from unittest.mock import patch
+    with patch("smart_downloads_daemon.sorter.datetime") as frozen_time:
+        frozen_time.now.return_value.strftime.return_value = ts
+        moved = move_file("data.csv", cfg)
     assert moved is not None
     assert moved.exists()
     assert moved.name == f"data_{ts}_1.csv"
@@ -288,9 +291,9 @@ def test_has_sufficient_space(tmp_path: Path):
     with patch("smart_downloads_daemon.sorter.get_free_space", return_value=60 * 1024 * 1024):
         assert has_sufficient_space(target, required_bytes=20 * 1024 * 1024) is False
 
-    # Free space unknown returns True
+    # Unknown free space must fail closed.
     with patch("smart_downloads_daemon.sorter.get_free_space", return_value=None):
-        assert has_sufficient_space(target, required_bytes=20 * 1024 * 1024) is True
+        assert has_sufficient_space(target, required_bytes=20 * 1024 * 1024) is False
 
 
 def test_move_file_blocked_by_insufficient_space(tmp_path: Path):
@@ -314,6 +317,36 @@ def test_move_file_blocked_by_insufficient_space(tmp_path: Path):
         assert not (docs / "Videos" / "video_grande.mp4").exists()
 
 
+def test_move_file_retains_open_writer(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs)
+    source = downloads / "long_download.txt"
+    with source.open("w") as writer:
+        writer.write("in progress")
+        writer.flush()
+        assert move_file(source.name, cfg) is None
+        assert source.exists()
+    assert move_file(source.name, cfg) is not None
+
+
+def test_move_file_rejects_path_escape_and_symlink(tmp_path: Path):
+    downloads = tmp_path / "Downloads"
+    docs = tmp_path / "Docs"
+    downloads.mkdir()
+    docs.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep")
+    (downloads / "link.txt").symlink_to(outside)
+    cfg = DaemonConfig(downloads_dir=downloads, destination_dir=docs)
+
+    assert move_file("../outside.txt", cfg) is None
+    assert move_file("link.txt", cfg) is None
+    assert outside.read_text() == "keep"
+
+
 def test_move_file_atomic_rollback_on_failure(tmp_path: Path):
     from unittest.mock import patch
 
@@ -326,12 +359,22 @@ def test_move_file_atomic_rollback_on_failure(tmp_path: Path):
     source_file = downloads / "relatorio.pdf"
     source_file.write_text("dados_importantes")
 
-    def failing_move(src, dst):
+    import errno
+    from smart_downloads_daemon.transfer import rename_noreplace
+
+    def first_cross_device(src, dst):
+        if src == source_file:
+            raise OSError(errno.EXDEV, "cross-device")
+        return rename_noreplace(src, dst)
+
+    def failing_copy(src, dst):
         # Simulate partial copy before sudden I/O exception
         Path(dst).write_text("corrupted_partial_data")
         raise OSError("I/O error: disk disconnected mid-transfer")
 
-    with patch("shutil.move", side_effect=failing_move):
+    with patch("smart_downloads_daemon.transfer.rename_noreplace", side_effect=first_cross_device), patch(
+        "smart_downloads_daemon.transfer.shutil.copy2", side_effect=failing_copy
+    ):
         moved = move_file("relatorio.pdf", cfg)
         assert moved is None
         # Source file must be intact
@@ -339,6 +382,7 @@ def test_move_file_atomic_rollback_on_failure(tmp_path: Path):
         assert source_file.read_text() == "dados_importantes"
         # Partial destination must have been purged by atomic rollback
         assert not (docs / "PDF" / "relatorio.pdf").exists()
+        assert not list((docs / "PDF").glob(".smartdown-*"))
 
 
 def test_sanitize_filename():
@@ -349,6 +393,8 @@ def test_sanitize_filename():
     assert sanitize_filename("nota|secreta?.txt") == "nota_secreta_.txt"
     assert sanitize_filename("documento.txt  ") == "documento.txt"
     assert sanitize_filename("pasta/teste\\nome") == "pasta_teste_nome"
+    assert sanitize_filename("CON.txt") == "_CON.txt"
+    assert sanitize_filename("bad\x01name.txt") == "bad_name.txt"
 
 
 def test_move_file_with_sanitized_name(tmp_path: Path):

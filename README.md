@@ -25,10 +25,15 @@ Most automated download organizers suffer from critical usability and architectu
 `smart-downloads-daemon` resolves all three problems:
 
 * **Direct `libc inotify` Syscalls via `ctypes`**: Communicates directly with the Linux kernel via `inotify_init1(0)` and `inotify_add_watch` with binary struct decoding (`struct inotify_event`). Zero third-party dependencies.
-* **0% Idle CPU (`select.poll`)**: The event loop sleeps in the kernel until an actual I/O event occurs or the next file cooldown expires. Zero busy-waiting.
-* **Smart Grace Period (5-Minute Cooldown)**: Files and folders remain immediately available in `~/Downloads` for quick access. Only after 5 minutes of inactivity are they moved to their permanent home in `~/Documents`.
+* **0% Idle CPU (`select.poll`) with Self-Pipe Wakeup**: The event loop sleeps in the kernel until an actual I/O event occurs or a background transfer completes. Zero busy-waiting.
+* **Verified Cross-Device Transfers (`renameat2` + SHA-256)**: Performs atomic moves on the same filesystem using libc `renameat2(RENAME_NOREPLACE)`. For cross-filesystem operations (e.g. ext4 to NTFS), uses staging files (`.smartdown-*.tmp`), validates integrity via SHA-256 streaming hash verification, and executes disk flushes (`fsync`) before publishing.
+* **Asynchronous Move Worker Thread**: Large file transfers run in an isolated worker thread without blocking the inotify poller loop, eliminating system/UI stutter and preventing event queue saturation.
+* **Kernel Inotify Overflow (`IN_Q_OVERFLOW`) Reconciliation**: Automatically detects inotify event drops/overflow and triggers an active reconciliation scan so no downloaded files are lost.
+* **Smart Grace Period (5-Minute Cooldown)**: Files and folders remain immediately available in `~/Downloads` for quick access. Only after 5 minutes of inactivity are they moved to their permanent home in `~/Documents` or external storage.
+* **Active Writer Detection via `/proc`**: Inspects `/proc/*/fd` and `/proc/*/fdinfo/*` for active write handles (`O_WRONLY`, `O_RDWR`) before scheduling or moving, ensuring downloads in progress are never moved prematurely.
+* **Strict Mount Verification (`os.path.ismount`)**: Validates mount points under `/media`, `/mnt`, and `/run/media` with `os.path.ismount`, preventing accidental writes to empty mount directories on the root SSD (`/`).
 * **Full Directory & Folder Organization**: Safely classifies and organizes downloaded folders (e.g. Google Drive download batches) into `Pastas` or matching subcategories, protected by recursive in-flight download guards.
-* **Visual Desktop Notifications**: Non-blocking desktop notifications on Linux via native `notify-send` with automatic `systemd --user` display discovery and toggleable configuration (`smartdown config --set-notifications on|off`).
+* **Visual Desktop Notifications & GNOME Integration**: Non-blocking desktop notifications on Linux via native `notify-send` with automatic `systemd --user` display environment inheritance (`WAYLAND_DISPLAY`, `DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`), desktop application entry registration, and toggleable configuration (`smartdown config --set-notifications on|off`).
 * **Smart Subcategories & Content Sniffing**: Files are classified into context-aware subfolders (e.g. `PDF/Ordem de Servico`, `PDF/Boletos`, `Planilhas/Cobranca e Negativacao`) via keyword matching and non-intrusive PDF content sniffing (via native `pdftotext`).
 * **Batch Directory Reorganization**: Reorganize existing flat category folders into the new subcategory structure safely with `smartdown organize` (`--dry-run` and `--apply`).
 * **Full Activity Logs & Migration History**: View persistent, complete history of all organized and migrated files with `smartdown logs`, supporting real-time streaming (`-f`), filtering, and JSON export.
@@ -50,20 +55,20 @@ Most automated download organizers suffer from critical usability and architectu
 
 ```mermaid
 flowchart TD
-    Kernel["Linux Kernel inotify (IN_CLOSE_WRITE / IN_MOVED_TO)"] -->|Event Trigger| Poller["select.poll Event Multiplexer"]
+    Kernel["Linux Kernel inotify (IN_CLOSE_WRITE / IN_MOVED_TO / IN_Q_OVERFLOW)"] -->|Event Trigger| Poller["select.poll Event Multiplexer with Self-Pipe"]
 
     subgraph DaemonLoop["smartdown Event Loop"]
         Poller -->|Raw struct inotify_event| Parser["Binary Struct Parser (struct.unpack_from)"]
         Parser --> PauseCheck{"Is Daemon Paused?"}
         PauseCheck -->|Yes: Paused| HoldQueue["Hold in Queue (Do not move)"]
-        PauseCheck -->|No| Guard{"Guard Rails (Check In-Flight or Hidden?)"}
-        Guard -->|Ignored: .crdownload / .tmp / .part| Drop["Ignore Event"]
-        Guard -->|Valid File| Scheduler["Grace-Period Scheduler (Default: 300s cooldown)"]
+        PauseCheck -->|No| Guard{"Guard Rails (/proc Writers & In-Flight?)"}
+        Guard -->|Active Writer or .crdownload / .tmp| Drop["Ignore / Keep Waiting"]
+        Guard -->|Valid File or Folder| Scheduler["Grace-Period Scheduler (Default: 300s cooldown)"]
 
         Scheduler --> DynamicWait["Dynamic Poll Timeout (Sleep until next file expires or 5s)"]
-        DynamicWait --> Expired{"Cooldown Expired?"}
-        Expired -->|No| DynamicWait
-        Expired -->|Yes| MountCheck{"Destination Mounted?"}
+        Expired{"Cooldown Expired?"} -->|No| DynamicWait
+        DynamicWait --> Expired
+        Expired -->|Yes| MountCheck{"Destination Mounted? (os.path.ismount)"}
         MountCheck -->|No| AutoMount{"Try Auto-Mount (udisksctl)"}
         AutoMount -->|Success| Classifier["Categorization Engine"]
         AutoMount -->|Failed| HoldQueue
@@ -73,12 +78,17 @@ flowchart TD
         SubcatCheck -->|Fallback| RootFolder["Target Root Category Folder"]
     end
 
-    SubcatFolder --> Collision{"File exists in Destination?"}
-    RootFolder --> Collision
+    SubcatFolder --> Worker["Async Move Worker Thread"]
+    RootFolder --> Worker
+    Worker --> Collision{"Destination Exists?"}
     Collision -->|Yes| Rename["Append Timestamp (_YYYYMMDD_HHMMSS)"]
-    Collision -->|No| Move["shutil.move to Destination"]
-    Rename --> Move
-    Move --> Dest["Destination Directory"]
+    Collision -->|No| TransferMethod{"Same Filesystem?"}
+    Rename --> TransferMethod
+    TransferMethod -->|Yes: Same FS| Renameat2["renameat2(RENAME_NOREPLACE)"]
+    TransferMethod -->|No: Cross-FS| Staging["Staging (.smartdown-*.tmp) + SHA-256 Hash Verify + fsync"]
+    Renameat2 --> Dest["Final Destination"]
+    Staging --> Dest
+    Dest --> Wake["Signal Self-Pipe (Wake Main Poller)"]
 ```
 
 ---
@@ -136,24 +146,26 @@ smart-downloads-daemon/
 │   ├── __init__.py                # Package version
 │   ├── __main__.py                # python -m smart_downloads_daemon support
 │   ├── cli.py                     # Command-line interface & argument parser
-│   ├── config.py                  # JSON config loader, subcategories & pause definitions
+│   ├── config.py                  # JSON config loader, mount verification & pause definitions
 │   ├── history.py                 # Persistent activity logging & live tail inspection
 │   ├── inotify.py                 # POSIX libc inotify ctypes wrapper & struct unpacking
 │   ├── migrator.py                # Batch storage migration engine across disks
 │   ├── notifier.py                # Desktop visual notifications via notify-send & display discovery
 │   ├── organizer.py               # Batch reorganization into intelligent subcategories
 │   ├── sorter.py                  # Subcategory resolution, guards & collision renaming
-│   └── watcher.py                 # select.poll dynamic event loop & grace scheduling
+│   ├── transfer.py                # Verified cross-device transfers (renameat2, SHA-256, staging)
+│   └── watcher.py                 # select.poll dynamic event loop, threaded worker & grace scheduling
 └── tests/
     ├── test_cli.py                # CLI commands, status, pause & lock tests
-    ├── test_config.py             # Config loading, pause control & disk helpers
+    ├── test_config.py             # Config loading, pause control & mount tests
     ├── test_history.py            # Persistent history recording, filtering & CLI tests
-    ├── test_inotify.py            # Struct size & initialization tests
+    ├── test_inotify.py            # Struct size, overflow & initialization tests
     ├── test_migrator.py           # Migration planning & collision tests
     ├── test_notifier.py           # Desktop notification dispatch, fallback & display tests
     ├── test_organizer.py          # Batch reorganize plan & collision tests
-    ├── test_sorter.py             # Subcategory classification, content sniffing & tests
-    └── test_watcher.py            # File scheduling, pause & retry expiration tests
+    ├── test_sorter.py             # Subcategory classification, content sniffing & guards
+    ├── test_transfer.py           # Atomic rename, staging rollback & SHA-256 verification tests
+    └── test_watcher.py            # File scheduling, thread worker & overflow recovery tests
 ```
 
 ---
@@ -304,9 +316,9 @@ smartdown organize --apply
 When moving organized categories to a secondary drive (or freeing up space on your primary disk):
 
 1. **Safety First**: The migrator only moves category directories managed by the daemon (`PDF`, `Textos`, `Planilhas`, `Imagens`, `Videos`, `Audios`, `Compactados`, `Outros`). Any personal repos or unmanaged files in the root folder remain strictly untouched.
-2. **Atomic Verification**: Files are copied and verified for size before unlinking source files.
+2. **Verified Transfers (`renameat2` + SHA-256)**: Single-filesystem transfers use kernel `renameat2` with `RENAME_NOREPLACE`. Cross-filesystem transfers stage files in `.smartdown-*.tmp`, calculate and verify streaming SHA-256 checksums, and issue `fsync` before renaming.
 3. **Collision Immune**: If a file already exists on the target disk, it is preserved and the incoming file receives an incremental timestamp counter (`_YYYYMMDD_HHMMSS_N`).
-4. **Mount Guard**: If a secondary/external drive is unmounted or disconnected, the daemon automatically holds downloads safely in `~/Downloads` until the mount returns, preventing root partition contamination.
+4. **Mount Guard (`os.path.ismount`)**: Validates mount points using `os.path.ismount`. If a secondary/external drive is unmounted or disconnected, the daemon holds downloads safely in `~/Downloads` without polluting the root partition mount directory.
 
 ---
 

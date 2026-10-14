@@ -9,6 +9,7 @@ ExecStart=%h/.local/bin/smartdown
 Restart=on-failure
 RestartSec=5s
 Environment=PYTHONUNBUFFERED=1
+PassEnvironment=DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
 
 [Install]
 WantedBy=default.target

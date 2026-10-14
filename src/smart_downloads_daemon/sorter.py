@@ -3,6 +3,7 @@ File classification, guard-rail filtering, subcategory resolution, and collision
 """
 
 import re
+import os
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import DaemonConfig
+from .transfer import verified_move
 
 
 def normalize_text(text: str) -> str:
@@ -73,6 +75,24 @@ def resolve_subcategory(
 
 
 ILLEGAL_NTFS_CHARS = re.compile(r'[<>:"/\\|?*]')
+CONTROL_CHARS = re.compile(r'[\x00-\x1f]')
+RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
+    f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+}
+
+
+def _destination_component(name: str) -> str:
+    if (not isinstance(name, str) or not name or name in (".", "..")
+            or Path(name).name != name or "\\" in name or CONTROL_CHARS.search(name)
+            or ILLEGAL_NTFS_CHARS.search(name) or name.rstrip(" .") != name):
+        raise ValueError(f"Unsafe destination category: {name!r}")
+    return name
+
+
+def _destination_path(base: Path, *parts: str) -> Path:
+    for part in parts:
+        _destination_component(part)
+    return base.joinpath(*parts)
 DEV_WORKSPACE_MARKERS = {".git", "pyvenv.cfg", "node_modules"}
 
 
@@ -81,11 +101,13 @@ def sanitize_filename(name: str) -> str:
     if not name:
         return name
     name_clean = name.strip(" .")
-    sanitized = ILLEGAL_NTFS_CHARS.sub("_", name_clean)
+    sanitized = CONTROL_CHARS.sub("_", ILLEGAL_NTFS_CHARS.sub("_", name_clean))
     p = Path(sanitized)
     stem = p.stem.rstrip(" .")
     if not stem:
         stem = "unnamed"
+    if stem.upper() in RESERVED_NAMES:
+        stem = f"_{stem}"
     suffix = p.suffix.rstrip(" .")
     if suffix:
         return f"{stem}{suffix}"
@@ -112,7 +134,7 @@ def is_folder_in_flight(folder_path: Path, config: DaemonConfig) -> bool:
                 if name_lower.endswith(bad_ext.lower()):
                     return True
     except Exception:
-        pass
+        return True
     return False
 
 
@@ -123,6 +145,8 @@ def is_valid_item(name: str, config: DaemonConfig, base_dir: Optional[Path] = No
 
     if base_dir is not None:
         target_path = base_dir / name
+        if target_path.is_symlink():
+            return False
         if target_path.is_dir():
             if is_folder_in_flight(target_path, config):
                 return False
@@ -142,6 +166,39 @@ def is_valid_file(filename: str, config: DaemonConfig) -> bool:
     return is_valid_item(filename, config)
 
 
+def is_open_for_write(path: Path) -> bool:
+    """Best-effort Linux check for writers owned by this user, including on startup."""
+    source = str(path.absolute())
+    prefix = source + os.sep
+    try:
+        processes = os.scandir("/proc")
+    except OSError:
+        return False
+    with processes:
+        for process in processes:
+            if not process.name.isdigit():
+                continue
+            try:
+                if process.stat().st_uid != os.getuid():
+                    continue
+                with os.scandir(f"/proc/{process.name}/fd") as descriptors:
+                    for descriptor in descriptors:
+                        try:
+                            target = os.readlink(descriptor.path)
+                            if target != source and not target.startswith(prefix):
+                                continue
+                            info = Path(f"/proc/{process.name}/fdinfo/{descriptor.name}").read_text()
+                            flags = next(line.split(":", 1)[1].strip() for line in info.splitlines()
+                                         if line.startswith("flags:"))
+                            if int(flags, 8) & os.O_ACCMODE in (os.O_WRONLY, os.O_RDWR):
+                                return True
+                        except (OSError, ValueError, StopIteration):
+                            continue
+            except OSError:
+                continue
+    return False
+
+
 def get_destination_folder(
     filename: str,
     config: DaemonConfig,
@@ -159,12 +216,12 @@ def get_destination_folder(
         for cat in sorted(config.subcategories.keys()):
             subcat = resolve_subcategory(cat, filename, config, source_path=source_path)
             if subcat:
-                return config.destination_dir / cat / subcat
+                return _destination_path(config.destination_dir, cat, subcat)
 
         # 2. Check if "Pastas" is in configured categories or fallback to "Pastas"
         if "Pastas" in config.categories:
-            return config.destination_dir / "Pastas"
-        return config.destination_dir / "Pastas"
+            return _destination_path(config.destination_dir, "Pastas")
+        return _destination_path(config.destination_dir, "Pastas")
 
     ext = Path(filename).suffix.strip().lower().lstrip(".")
     target_category: Optional[str] = None
@@ -176,13 +233,13 @@ def get_destination_folder(
                 break
 
     if not target_category:
-        return config.destination_dir / "Outros"
+        return _destination_path(config.destination_dir, "Outros")
 
     subcat = resolve_subcategory(target_category, filename, config, source_path=source_path)
     if subcat:
-        return config.destination_dir / target_category / subcat
+        return _destination_path(config.destination_dir, target_category, subcat)
 
-    return config.destination_dir / target_category
+    return _destination_path(config.destination_dir, target_category)
 
 
 SAFETY_MARGIN_BYTES = 50 * 1024 * 1024  # 50 MB safety buffer
@@ -205,18 +262,31 @@ def has_sufficient_space(dest_dir: Path, required_bytes: int, safety_margin: int
     """Verify if destination storage has enough free space plus safety margin."""
     free_bytes = get_free_space(dest_dir)
     if free_bytes is None:
-        return True
+        return False
     return free_bytes >= (required_bytes + safety_margin)
 
 
 def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
     """Move a file or folder to its destination category/subcategory folder with collision resolution."""
+    if not filename or Path(filename).name != filename or filename in (".", ".."):
+        return None
+    try:
+        config.destination_dir.resolve().relative_to(config.downloads_dir.resolve())
+    except ValueError:
+        pass
+    else:
+        print("[ERROR] Destination must be outside Downloads.", file=sys.stderr)
+        return None
     source_path = config.downloads_dir / filename
     if not source_path.exists():
+        return None
+    if source_path.is_symlink():
         return None
 
     is_dir = source_path.is_dir()
     if is_dir and (is_folder_in_flight(source_path, config) or is_dev_workspace(source_path)):
+        return None
+    if is_open_for_write(source_path):
         return None
 
     if not config.is_destination_available():
@@ -232,10 +302,16 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
             file_size = sum(f.stat().st_size for f in source_path.rglob("*") if f.is_file())
         else:
             file_size = source_path.stat().st_size
-    except Exception:
-        file_size = None
+    except Exception as error:
+        print(f"[ERROR] Cannot determine source size for '{filename}': {error}", file=sys.stderr)
+        return None
 
-    dest_folder = get_destination_folder(filename, config, source_path=source_path)
+    try:
+        dest_folder = get_destination_folder(filename, config, source_path=source_path)
+        dest_folder.resolve().relative_to(config.destination_dir.resolve())
+    except ValueError as error:
+        print(f"[ERROR] {error}. Retaining '{filename}' in Downloads.", file=sys.stderr)
+        return None
 
     # 1. Disk Space Pre-Check Guard
     if file_size is not None and not has_sufficient_space(dest_folder, file_size):
@@ -250,7 +326,11 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
         sys.stderr.flush()
         return None
 
-    dest_folder.mkdir(parents=True, exist_ok=True)
+    try:
+        dest_folder.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(f"[ERROR] Cannot prepare destination {dest_folder}: {error}", file=sys.stderr)
+        return None
 
     safe_name = sanitize_filename(filename)
     dest_file = dest_folder / safe_name
@@ -273,7 +353,7 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
                 counter += 1
 
     try:
-        shutil.move(str(source_path), str(dest_file))
+        verified_move(source_path, dest_file, sanitize_name=sanitize_filename)
         print(f"[OK] {filename} -> {dest_file}")
         sys.stdout.flush()
 
@@ -304,28 +384,14 @@ def move_file(filename: str, config: DaemonConfig) -> Optional[Path]:
                 is_dir=is_dir,
                 config=config,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARNING] Could not dispatch notification for {filename}: {e}", file=sys.stderr)
+            sys.stderr.flush()
 
         return dest_file
     except Exception as e:
         print(f"[ERROR] Failed to move {filename}: {e}", file=sys.stderr)
         sys.stderr.flush()
-
-        # Atomic failure rollback: remove partial destination if source is still intact
-        try:
-            if dest_file.exists() and source_path.exists():
-                if dest_file.is_file():
-                    dest_file.unlink()
-                elif dest_file.is_dir():
-                    shutil.rmtree(str(dest_file), ignore_errors=True)
-                print(
-                    f"[CLEANUP] Purged incomplete destination {dest_file} after transfer failure.",
-                    file=sys.stderr,
-                )
-                sys.stderr.flush()
-        except Exception:
-            pass
 
         return None
 

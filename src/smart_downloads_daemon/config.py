@@ -174,19 +174,27 @@ def is_path_available(path: Path) -> bool:
     Protects against writing to unmounted /media or /mnt paths.
     """
     try:
-        p = path.expanduser().resolve()
+        p = path.expanduser().absolute()
+        resolved = p.resolve()
     except Exception:
         return False
 
-    if p.exists():
-        return os.access(p, os.W_OK)
-
-    # Protect against unmounted /media or /mnt devices
-    parts = p.parts
-    if len(parts) >= 3 and parts[1] in ("media", "mnt"):
-        mount_root = Path(*parts[:4]) if len(parts) >= 4 else Path(*parts[:3])
-        if not mount_root.exists():
+    # Check both the configured path and its target, so a symlink cannot hide
+    # a writable directory left behind by an unmounted device.
+    for candidate in (p, resolved):
+        parts = candidate.parts
+        if len(parts) >= 2 and parts[1] in ("media", "mnt"):
+            count = 4 if parts[1] == "media" and len(parts) >= 4 else 3
+            mount_root = Path(*parts[:count]) if len(parts) >= count else candidate
+        elif len(parts) >= 4 and parts[1:3] == ("run", "media"):
+            mount_root = Path(*parts[:5]) if len(parts) >= 5 else candidate
+        else:
+            continue
+        if not os.path.ismount(mount_root):
             return False
+
+    if p.exists():
+        return p.is_dir() and os.access(p, os.W_OK)
 
     parent = p.parent
     while not parent.exists() and parent != parent.parent:
@@ -310,8 +318,10 @@ class DaemonConfig:
             "ignore_extensions": sorted(list(self.ignore_extensions)),
             "notifications_enabled": self.notifications_enabled,
         }
-        with open(path, "w", encoding="utf-8") as f:
+        tmp_path = path.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        tmp_path.replace(path)
         return path
 
     def is_paused(self) -> bool:

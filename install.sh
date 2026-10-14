@@ -51,7 +51,31 @@ if [[ -f "${SERVICE_FILE}" ]]; then
   cp -f "${SERVICE_FILE}" "${SYSTEMD_USER_DIR}/smart-downloads-daemon.service"
   systemctl --user daemon-reload 2>/dev/null || true
   systemctl --user enable --now smart-downloads-daemon.service 2>/dev/null || true
-  echo "✓ Installed and enabled systemd service: smart-downloads-daemon.service"
+  systemctl --user restart smart-downloads-daemon.service 2>/dev/null || true
+  echo "✓ Installed, enabled, and restarted systemd service: smart-downloads-daemon.service"
+fi
+
+# 4. Desktop application entry & notification permissions
+DESKTOP_DIR="${HOME}/.local/share/applications"
+mkdir -p "${DESKTOP_DIR}"
+cat << 'EOF' > "${DESKTOP_DIR}/smartdown.desktop"
+[Desktop Entry]
+Type=Application
+Name=Smart Downloads
+Comment=Smart Downloads Sorter Daemon
+Exec=smartdown status
+Icon=folder-download
+Terminal=false
+Categories=Utility;
+EOF
+update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
+echo "✓ Installed desktop entry: ${DESKTOP_DIR}/smartdown.desktop"
+
+# Register in GNOME notification banner settings if gsettings is available
+if command -v gsettings &>/dev/null; then
+  gsettings set org.gnome.desktop.notifications.application:/org/gnome/desktop/notifications/application/smartdown/ application-id "'smartdown.desktop'" 2>/dev/null || true
+  gsettings set org.gnome.desktop.notifications.application:/org/gnome/desktop/notifications/application/smartdown/ enable true 2>/dev/null || true
+  gsettings set org.gnome.desktop.notifications.application:/org/gnome/desktop/notifications/application/smartdown/ show-banners true 2>/dev/null || true
 fi
 
 # 4. Verification

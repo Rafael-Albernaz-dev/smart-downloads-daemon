@@ -26,10 +26,12 @@ def test_acquire_instance_lock(tmp_path: Path):
     lock_file = tmp_path / "test.lock"
     f1 = acquire_instance_lock(lock_file)
     assert f1 is not None
+    pid_text = lock_file.read_text()
 
     # Second acquisition on same lock should fail
     f2 = acquire_instance_lock(lock_file)
     assert f2 is None
+    assert lock_file.read_text() == pid_text
 
     # Closing f1 allows acquisition again
     f1.close()
